@@ -1,0 +1,77 @@
+import asyncio
+import math
+from datetime import UTC, datetime
+from email.utils import parsedate_to_datetime
+
+import httpx
+
+from .config import Config
+from .models import SourceError, utcnow
+from .storage import Store
+
+
+def retry_after(value: str | None, now: float) -> float:
+    if not value:
+        return 0
+    try:
+        seconds = float(value)
+        return max(0, seconds) if math.isfinite(seconds) else 0
+    except ValueError:
+        try:
+            date = parsedate_to_datetime(value)
+            if date.tzinfo is None:
+                date = date.replace(tzinfo=UTC)
+            return max(0, (date - datetime.fromtimestamp(now, UTC)).total_seconds())
+        except (ValueError, TypeError, OverflowError):
+            return 0
+
+
+class PublicTransport:
+    def __init__(self, client: httpx.AsyncClient, store: Store, config: Config, clock=utcnow):
+        self.client, self.store, self.config, self.clock = client, store, config, clock
+        self.owner = ""
+        self.count = 0
+        self.lease_seconds = max(180, config.timeout * 4 + config.request_gap * 4 + 60)
+
+    async def get_json(self, url: str, params: dict) -> dict:
+        while True:
+            delay = self.store.reserve_request(
+                self.owner, self.clock(), self.config.request_gap, self.lease_seconds
+            )
+            if not delay:
+                break
+            await asyncio.sleep(min(delay, 30))
+        self.count += 1
+        try:
+            response = await self.client.get(url, params=params)
+        except httpx.HTTPError:
+            raise SourceError("NETWORK", "網路連線失敗或逾時") from None
+        if response.status_code in (401, 403):
+            raise SourceError("BLOCKED", f"網站拒絕存取（HTTP {response.status_code}），需人工處理")
+        if response.status_code == 429:
+            raise SourceError(
+                "RATE_LIMITED",
+                "網站限制請求頻率",
+                retry_after(response.headers.get("Retry-After"), self.clock()),
+            )
+        if response.status_code >= 500:
+            raise SourceError("NETWORK", "售票網站暫時異常")
+        if response.status_code != 200:
+            raise SourceError("PARSE", f"資料來源回傳非預期 HTTP {response.status_code}")
+        if len(response.content) > 5_000_000:
+            raise SourceError("PARSE", "回應超出資料大小限制")
+        if "text/html" in response.headers.get("content-type", "").lower():
+            page = response.text.lower()
+            if any(
+                marker in page
+                for marker in ("captcha", "cf-chl-", "challenge-platform", "verify you are human")
+            ):
+                raise SourceError("BLOCKED", "網站要求驗證，需人工處理")
+            raise SourceError("PARSE", "API 回傳 HTML，未取得可靠票況")
+        try:
+            value = response.json()
+        except ValueError:
+            raise SourceError("PARSE", "資料來源不是有效 JSON") from None
+        if not isinstance(value, dict):
+            raise SourceError("PARSE", "JSON 資料結構不正確")
+        return value

@@ -1,0 +1,34 @@
+app:
+  timezone: Asia/Taipei
+  database_path: data/watcher.db
+  retention_days: 30
+
+polling:
+  normal_interval_seconds: [300, 900]
+  active_interval_seconds: [60, 180]
+  active_window_seconds: 1800
+  exit_active_after_no_available_checks: 2
+
+http:
+  platform_concurrency: 1
+  min_request_gap_seconds: 5
+  timeout_seconds: 20
+  backoff_seconds: [900, 1800, 3600]
+
+notifications:
+  webhook_url_env: DISCORD_WEBHOOK_URL
+  system_alerts_enabled: true
+  delivery_ttl_seconds: 600
+  retry_delays_seconds: [10, 30, 60, 120, 300]
+
+# 填入真實活動網址後改 enabled: true。範例預設不啟動監控。
+targets:
+  - id: my-event
+    name: 我的監控活動
+    platform: ticketplus
+    url: https://ticketplus.com.tw/activity/e000000001
+    enabled: false
+    source: auto
+    session_ids: []
+    item_ids: []  # 目前只驗證場次粒度；非空會回報 UNSUPPORTED
+    stop_at: null  # 例如 '2026-11-29T23:00:00+08:00'

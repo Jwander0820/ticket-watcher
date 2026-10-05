@@ -1,0 +1,12 @@
+.venv
+.git
+.env
+config.yaml
+data
+dist
+build
+.pytest-tmp*
+.pytest_cache
+.ruff_cache
+**/__pycache__
+*.tmp.*
