@@ -24,11 +24,13 @@ def releases(watcher):
 
 
 @pytest.mark.parametrize(
-    "status", ["AVAILABLE", "SOLD_OUT", "UPCOMING", "PAUSED", "ENDED", "UNKNOWN"]
+    "status",
+    ["AVAILABLE", "SOLD_OUT", "TEMPORARILY_UNAVAILABLE", "UPCOMING", "PAUSED", "ENDED", "UNKNOWN"],
 )
 def test_first_observation_never_reports_release(harness, status):
     result = check(harness, status, complete=status != "UNKNOWN")
     assert result.data["evaluation"]["release_detected"] is False
+    assert result.data["evaluation"]["release_hint_detected"] is False
     assert not releases(harness["watcher"])
 
 

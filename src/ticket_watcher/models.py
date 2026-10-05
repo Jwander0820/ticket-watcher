@@ -9,6 +9,7 @@ class TicketStatus(StrEnum):
     UPCOMING = "UPCOMING"
     AVAILABLE = "AVAILABLE"
     SOLD_OUT = "SOLD_OUT"
+    TEMPORARILY_UNAVAILABLE = "TEMPORARILY_UNAVAILABLE"
     PAUSED = "PAUSED"
     ENDED = "ENDED"
 
@@ -33,6 +34,11 @@ class TicketItem:
     venue: str | None = None
     price: int | None = None
     location: str | None = None
+    source_status: str | None = None
+    availability_text: str | None = None
+    remaining_count: int | None = None
+    session_name: str | None = None
+    order_url: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -44,7 +50,7 @@ class Observation:
     public_url: str
     observed_at: float
     items: tuple[TicketItem, ...]
-    source: str = "ticketplus-public-v1/session"
+    source: str = "ticketplus-public-v2/session"
     granularity: str = "SESSION"
     complete: bool = True
     request_count: int = 0

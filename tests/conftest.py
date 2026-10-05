@@ -28,7 +28,7 @@ class Source:
         self.values = []
         self.calls = 0
 
-    def push(self, *statuses, complete=True, source="ticketplus-public-v1/session"):
+    def push(self, *statuses, complete=True, source="ticketplus-public-v2/session"):
         items = tuple(
             TicketItem(
                 f"s{i:09d}",

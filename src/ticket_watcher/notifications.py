@@ -57,6 +57,8 @@ class DiscordNotifier:
         if notice["kind"] == "SYSTEM":
             content = f"Ticket Watcher｜{payload['message']}\n事件：{notice['event_id']}"
         else:
+            hint = notice["kind"] == "RELEASE_HINT"
+            expected = "TEMPORARILY_UNAVAILABLE" if hint else "AVAILABLE"
             states = {x["item_key"]: x for x in self.store.items(notice["target_id"])}
             excluded = set(json.loads(notice["excluded_items"]))
             changes = [
@@ -64,7 +66,7 @@ class DiscordNotifier:
                 for x in payload["changes"]
                 if x["item_key"] not in excluded
                 and x["item_key"] in states
-                and states[x["item_key"]]["last_valid"] == "AVAILABLE"
+                and states[x["item_key"]]["last_valid"] == expected
             ]
             if not changes:
                 return None
@@ -73,20 +75,37 @@ class DiscordNotifier:
             def display(value):
                 return datetime.fromtimestamp(value, zone).strftime("%Y/%m/%d %H:%M:%S %Z")
 
+            label = "釋票線索：暫無票券" if hint else "偵測到可購票"
+            granularity = {"SESSION": "場次", "AREA": "票區", "PRODUCT": "票種"}.get(
+                payload["granularity"], payload["granularity"]
+            )
             lines = [
-                f"Ticket Watcher｜偵測到可購票\n活動：{payload['event_name'][:180]}",
-                f"監控粒度：場次｜本輪釋票項目：{len(changes)}",
+                f"Ticket Watcher｜{label}\n活動：{payload['event_name'][:180]}",
+                f"監控粒度：{granularity}｜本輪項目：{len(changes)}",
             ]
+            if hint:
+                lines.append(
+                    "外頁由售完轉為「暫無票券」，這是釋票線索；目前未確認正數餘票，請至內頁查看。"
+                )
             # All items were evaluated and saved; only the message presentation is bounded.
             for change in changes:
                 item = change["item"]
+                current_label = "暫無票券（線索）" if hint else "可購買"
                 line = (
-                    f"\n場次：{item['name'][:120]} ({item['session_id']})\n"
+                    f"\n場次：{(item.get('session_name') or item['name'])[:120]} ({item['session_id']})\n"
                     f"日期／時間：{item.get('date') or '來源未提供'} {item.get('time') or ''}\n"
                     f"場館：{item.get('venue') or '來源未提供'}\n"
-                    f"狀態：售完 → 可購買\n最後確認售完：{display(change['previous_observed_at'])}\n"
-                    f"首次偵測有票：{display(change['observed_at'])}"
+                    f"狀態：無票 → {current_label}\n上次無票觀測：{display(change['previous_observed_at'])}\n"
+                    f"本次偵測：{display(change['observed_at'])}"
                 )
+                if payload["granularity"] != "SESSION":
+                    line += f"\n項目：{item['name'][:120]} ({item['item_key']})"
+                    if item.get("price") is not None:
+                        line += f"｜票價：{item['price']}"
+                    if item.get("availability_text"):
+                        line += f"\n票況：{item['availability_text']}"
+                if hint and item.get("order_url"):
+                    line += f"\n場次內頁：{item['order_url']}"
                 if change["monitoring_gap"]:
                     line += "\n中間存在超過 45 分鐘的監控空窗"
                 if sum(len(x) for x in lines) + len(line) > 1400:

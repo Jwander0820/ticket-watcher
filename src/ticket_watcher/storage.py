@@ -179,13 +179,13 @@ class Store:
             (event_id, "PENDING" if enabled else "DISABLED", now, now + ttl),
         )
 
-    def cancel_unavailable(self, db, target_id: str, unavailable: set[str]):
+    def cancel_unavailable(self, db, target_id: str, unavailable: set[str], *, kind="RELEASE"):
         if not unavailable:
             return
         rows = db.execute(
             """SELECT o.event_id,o.excluded_items,e.payload FROM outbox o JOIN events e ON e.id=o.event_id
-         WHERE e.target_id=? AND e.kind='RELEASE' AND o.status='PENDING'""",
-            (target_id,),
+         WHERE e.target_id=? AND e.kind=? AND o.status='PENDING'""",
+            (target_id, kind),
         ).fetchall()
         for row in rows:
             payload = json.loads(row["payload"])

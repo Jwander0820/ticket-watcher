@@ -37,9 +37,12 @@ def capabilities() -> Result:
                 {
                     "id": "ticketplus",
                     "granularity": "SESSION",
-                    "source": "ticketplus-public-v1/session",
+                    "source": "ticketplus-public-v2/session",
                     "requires_login": False,
-                    "item_filters_supported": False,
+                    "item_filters_supported": True,
+                    "supported_granularities": ["SESSION", "AREA", "PRODUCT"],
+                    "url_modes": {"activity": "SESSION", "order": "AREA_OR_PRODUCT"},
+                    "release_hint_supported": True,
                 }
             ],
             "requires": {
@@ -258,15 +261,17 @@ class Watcher:
             },
         )
 
-    def _apply(self, target: Target, observation: Observation) -> tuple[list[dict], str | None]:
+    def _apply(
+        self, target: Target, observation: Observation
+    ) -> tuple[list[dict], str | None, str | None]:
         now = observation.observed_at
-        changes, releases, unavailable = [], [], set()
+        changes, releases, hints, unavailable, no_hints = [], [], [], set(), set()
         with self.store.transaction() as db:
             old = self.store.target(target.id)
             if old["source"] and old["source"] != observation.source:
                 db.execute("DELETE FROM items WHERE target_id=?", (target.id,))
                 db.execute(
-                    """UPDATE outbox SET status='CANCELLED' WHERE status='PENDING' AND event_id IN
+                    """UPDATE outbox SET status='CANCELLED' WHERE status IN ('PENDING','INFLIGHT') AND event_id IN
                  (SELECT id FROM events WHERE target_id=?)""",
                     (target.id,),
                 )
@@ -299,13 +304,21 @@ class Watcher:
                     }
                     changes.append(change)
                     if (
-                        previous["last_valid"] == "SOLD_OUT"
+                        previous["last_valid"] in {"SOLD_OUT", "TEMPORARILY_UNAVAILABLE"}
                         and item.status == TicketStatus.AVAILABLE
                     ):
                         sequence += 1
                         releases.append({**change, "release_sequence": sequence})
+                    elif (
+                        previous["last_valid"] == "SOLD_OUT"
+                        and item.status == TicketStatus.TEMPORARILY_UNAVAILABLE
+                        and observation.granularity == "SESSION"
+                    ):
+                        hints.append(change)
                 if valid and item.status != TicketStatus.AVAILABLE:
                     unavailable.add(item.item_key)
+                if valid and item.status != TicketStatus.TEMPORARILY_UNAVAILABLE:
+                    no_hints.add(item.item_key)
                 db.execute(
                     """INSERT INTO items VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(target_id,item_key)
                  DO UPDATE SET last_valid=excluded.last_valid,valid_at=excluded.valid_at,observed=excluded.observed,
@@ -329,8 +342,9 @@ class Watcher:
                 )
             complete = observation.complete and not missing
             self.store.cancel_unavailable(db, target.id, unavailable)
+            self.store.cancel_unavailable(db, target.id, no_hints, kind="RELEASE_HINT")
             active_until, no_available = old["active_until"], old["no_available"]
-            if releases:
+            if releases or hints:
                 active_until, no_available = now + self.config.active_window, 0
             elif complete:
                 no_available = (
@@ -386,15 +400,12 @@ class Watcher:
             if not complete and (old["parse_failures"] == 0 or pause):
                 self._system(
                     db,
-                    f"目標 {target.id} 場次資料不完整"
+                    f"目標 {target.id} 票況資料不完整"
                     + ("，已暫停。" if pause else "，保留缺失項目的最後有效票況。"),
                     target.id,
                 )
-            non_releases = [
-                x
-                for x in changes
-                if not (x["previous"] == "SOLD_OUT" and x["current"] == "AVAILABLE")
-            ]
+            notified_keys = {x["item_key"] for x in releases + hints}
+            non_releases = [x for x in changes if x["item_key"] not in notified_keys]
             if non_releases:
                 db.execute(
                     "INSERT INTO events VALUES(?,?,?,?,?)",
@@ -424,7 +435,26 @@ class Watcher:
                     self.config.notification_ttl,
                     True,
                 )
-        return changes, event_id
+            hint_event_id = None
+            if hints:
+                hint_event_id = str(uuid.uuid4())
+                self.store.enqueue(
+                    db,
+                    hint_event_id,
+                    target.id,
+                    "RELEASE_HINT",
+                    now,
+                    {
+                        "event_name": observation.event_name,
+                        "public_url": observation.public_url,
+                        "granularity": "SESSION",
+                        "changes": hints,
+                        "signal": "暫無票券",
+                    },
+                    self.config.notification_ttl,
+                    True,
+                )
+        return changes, event_id, hint_event_id
 
     async def check(self, ident: str, *, detail=False, limit=50, offset=0) -> Result:
         target = self._target(ident)
@@ -452,19 +482,24 @@ class Watcher:
             except SourceError as error:
                 result = self._error(error, target)
             else:
-                changes, event_id = self._apply(target, observation)
+                changes, event_id, hint_event_id = self._apply(target, observation)
                 result = Result(
                     result_source="LIVE",
                     data={
                         **observation_result(observation, detail, limit, offset),
                         "target_id": ident,
-                        "evaluation": {"performed": True, "release_detected": bool(event_id)},
+                        "evaluation": {
+                            "performed": True,
+                            "release_detected": bool(event_id),
+                            "release_hint_detected": bool(hint_event_id),
+                        },
                         "changes": changes[offset : offset + limit],
                         "changes_total": len(changes),
                         "changes_next_offset": offset + limit
                         if offset + limit < len(changes)
                         else None,
                         "event_id": event_id,
+                        "hint_event_id": hint_event_id,
                         "complete": self.store.target(ident)["last_error"] is None,
                         "next_allowed_at": timestamp(self.store.target(ident)["next_check"]),
                     },
@@ -481,6 +516,9 @@ class Watcher:
         await self.notifier.deliver()
         if result.execution_status == "COMPLETED":
             result.data["notification"] = self.store.notification_status(result.data["event_id"])
+            result.data["hint_notification"] = self.store.notification_status(
+                result.data["hint_event_id"]
+            )
         return result
 
     def status(self, ident=None, *, detail=False, limit=50, offset=0) -> Result:

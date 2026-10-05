@@ -62,7 +62,7 @@ def test_invalid_event_ids_are_unsupported(value):
         ("pending", "UPCOMING"),
         ("over", "ENDED"),
         ("lock", "PAUSED"),
-        ("unavailable", "PAUSED"),
+        ("unavailable", "TEMPORARILY_UNAVAILABLE"),
     ],
 )
 def test_verified_status_mapping(raw, expected):

@@ -1,0 +1,27 @@
+# 實測案例，預設全部關閉。只想監控外頁時啟用 yuuri-outer；
+# 如需混用內頁票區訊號，可一併啟用下方 10/9、10/10。
+# 內頁 URL 由公開場次資料取得，不需要手動先點入網站。
+app:
+  timezone: Asia/Taipei
+  database_path: ../data/watcher.db
+
+targets:
+  - id: yuuri-outer
+    name: YUURI 外頁釋票線索
+    url: https://ticketplus.com.tw/activity/7acedf4b414903ac17104384cb416849
+    enabled: false
+  - id: yuuri-1009
+    name: YUURI 10/9 票區
+    url: https://ticketplus.com.tw/order/7acedf4b414903ac17104384cb416849/c88be5c1c01bf684e9a56b6defcd6e8d
+    enabled: false
+    item_ids: []
+  - id: yuuri-1010
+    name: YUURI 10/10 票區
+    url: https://ticketplus.com.tw/order/7acedf4b414903ac17104384cb416849/2606691b5fcc73c52940bfb047a3d622
+    enabled: false
+    item_ids: []
+  - id: sale-example
+    name: 女巫店販售中票種範例
+    url: https://ticketplus.com.tw/order/6def673ab73ab7d7a4d0597ae84809ca/c2e30fcb68cdcd8cee2b3576dd4fe2f5
+    enabled: false
+    item_ids: []

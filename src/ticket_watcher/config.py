@@ -18,11 +18,17 @@ def validate_url(url: str) -> str:
         or parts.username
         or parts.password
         or parts.port not in (None, 443)
-        or not re.fullmatch(r"/activity/(?:[a-f0-9]{32}|e[0-9]{9})/?", parts.path)
+        or not re.fullmatch(
+            r"/(?:activity/(?:[a-f0-9]{32}|e[0-9]{9})"
+            r"|order/(?:[a-f0-9]{32}|e[0-9]{9})/(?:[a-f0-9]{32}|s[0-9]{9}))/?",
+            parts.path,
+        )
         or parts.query
         or parts.fragment
     ):
-        raise ValueError("需使用公開 TicketPlus 活動網址：https://ticketplus.com.tw/activity/<ID>")
+        raise ValueError(
+            "需使用公開 TicketPlus 活動或場次購票網址（activity/<ID> 或 order/<活動ID>/<場次ID>）"
+        )
     return "https://ticketplus.com.tw" + parts.path.rstrip("/")
 
 

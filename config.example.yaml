@@ -21,7 +21,8 @@ notifications:
   delivery_ttl_seconds: 600
   retry_delays_seconds: [10, 30, 60, 120, 300]
 
-# 填入真實活動網址後改 enabled: true。範例預設不啟動監控。
+# activity 網址監控外頁場次；order 網址監控內頁票區／票種。
+# 填入真實網址後改 enabled: true。範例預設不啟動監控。
 targets:
   - id: my-event
     name: 我的監控活動
@@ -30,5 +31,5 @@ targets:
     enabled: false
     source: auto
     session_ids: []
-    item_ids: []  # 目前只驗證場次粒度；非空會回報 UNSUPPORTED
+    item_ids: []  # order 網址可篩選 a000... 票區或 p000... 票種；activity 不接受
     stop_at: null  # 例如 '2026-11-29T23:00:00+08:00'
