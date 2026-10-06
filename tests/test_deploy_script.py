@@ -6,6 +6,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+import yaml
 
 BASH = (
     "C:/Software/Git/bin/bash.exe"
@@ -122,3 +123,52 @@ def test_failed_health_rolls_back_without_restoring_database(tmp_path):
     assert "helper old-image-id verify" in calls
     assert "helper old-image-id resume" in calls
     assert "restore" not in calls
+
+
+def validate_inputs(**changes):
+    if not BASH:
+        pytest.skip("Bash required")
+    workflow = yaml.safe_load(
+        (SCRIPT.parents[1] / ".github/workflows/tests.yml").read_text(encoding="utf-8")
+    )
+    preflight = workflow["jobs"]["deploy"]["steps"][0]["run"].split("ssh_dir=$(mktemp", 1)[0]
+    values = dict(
+        VPS_HOST="192.0.2.10",
+        VPS_PORT="22",
+        VPS_USER="ubuntu",
+        VPS_SSH_KEY="fake-private-key",
+        VPS_KNOWN_HOSTS="fake-host-key",
+        IMAGE_DIGEST=DIGEST,
+    )
+    values.update(changes)
+    return subprocess.run(
+        [BASH, "-c", preflight],
+        env=dict(os.environ, **values),
+        capture_output=True,
+        text=True,
+        timeout=20,
+    )
+
+
+def test_valid_workflow_inputs_pass_without_printing_credentials():
+    result = validate_inputs()
+    assert result.returncode == 0, result.stderr
+    assert not result.stdout and not result.stderr
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("VPS_HOST", "https://private-host.invalid"),
+        ("VPS_PORT", "22\n"),
+        ("VPS_PORT", "65536"),
+        ("VPS_USER", "private-wrong-user"),
+        ("IMAGE_DIGEST", "private-bad-digest"),
+    ],
+)
+def test_workflow_input_failure_names_field_without_exposing_value(field, value):
+    result = validate_inputs(**{field: value})
+    assert result.returncode != 0
+    assert field in result.stderr
+    assert value not in result.stderr
+    assert "fake-private-key" not in result.stderr

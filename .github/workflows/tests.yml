@@ -82,11 +82,17 @@ jobs:
           : "${VPS_HOST:?Missing VPS_HOST}" "${VPS_PORT:?Missing VPS_PORT}"
           : "${VPS_USER:?Missing VPS_USER}" "${VPS_SSH_KEY:?Missing VPS_SSH_KEY}"
           : "${VPS_KNOWN_HOSTS:?Missing VPS_KNOWN_HOSTS}"
-          [[ "$VPS_HOST" =~ ^[a-zA-Z0-9][a-zA-Z0-9.-]*$ ]]
-          [[ "$VPS_PORT" =~ ^[0-9]{1,5}$ ]]
-          (( 10#$VPS_PORT > 0 && 10#$VPS_PORT <= 65535 ))
-          [[ "$VPS_USER" == ubuntu ]]
-          [[ "$IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
+          fail() { printf '::error::%s\n' "$1" >&2; exit 1; }
+          [[ "$VPS_HOST" =~ ^[a-zA-Z0-9][a-zA-Z0-9.-]*$ ]] || \
+            fail 'VPS_HOST must be a hostname or IP only, without ssh, URL, @, quotes or whitespace.'
+          [[ "$VPS_PORT" =~ ^[0-9]{1,5}$ ]] || \
+            fail 'VPS_PORT must contain only the SSH port number, for example 22.'
+          (( 10#$VPS_PORT > 0 && 10#$VPS_PORT <= 65535 )) || \
+            fail 'VPS_PORT must be between 1 and 65535.'
+          [[ "$VPS_USER" == ubuntu ]] || \
+            fail 'VPS_USER must be ubuntu, matching the restricted deployment installer.'
+          [[ "$IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || \
+            fail 'IMAGE_DIGEST from the publish job is invalid.'
           ssh_dir=$(mktemp -d "$RUNNER_TEMP/ticket-watcher-ssh.XXXXXX")
           trap 'rm -rf -- "$ssh_dir"' EXIT
           printf '%s\n' "$VPS_SSH_KEY" > "$ssh_dir/key"

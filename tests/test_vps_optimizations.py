@@ -192,6 +192,30 @@ def test_health_cli_does_not_import_worker_or_http_clients(tmp_path):
     assert result.stdout.splitlines()[-1] == "[]"
 
 
+def test_access_login_redirect_allows_only_homepage_navigation(tmp_path):
+    async def scenario():
+        async with panel(tmp_path, public_origin="https://tickets.example.com") as (client, _, _):
+            headers = {
+                "Host": "tickets.example.com",
+                "Sec-Fetch-Site": "cross-site",
+                "Sec-Fetch-Mode": "navigate",
+                "Sec-Fetch-Dest": "document",
+            }
+            assert (await client.get("/", headers=headers)).status == 200
+            assert (await client.head("/", headers=headers)).status == 200
+            assert (await client.get("/api/state", headers=headers)).status == 403
+            assert (await client.post("/api/settings", headers=headers, json={})).status == 403
+            for bad in (
+                {**headers, "Sec-Fetch-Dest": "iframe"},
+                {**headers, "Sec-Fetch-Mode": "cors"},
+                {**headers, "Host": "attacker.invalid"},
+                {**headers, "Origin": "https://attacker.invalid"},
+            ):
+                assert (await client.get("/", headers=bad)).status == 403
+
+    asyncio.run(scenario())
+
+
 def test_public_origin_supports_tunnel_without_trusting_forwarded_headers(tmp_path):
     async def scenario():
         async with panel(tmp_path, public_origin="https://tickets.example.com/") as (client, c, _):

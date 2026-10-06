@@ -420,7 +420,15 @@ async def protect(request, handler):
         origin = request.headers.get("Origin")
         if origin and origin not in allowed_origins:
             raise web.HTTPForbidden()
-        if request.headers.get("Sec-Fetch-Site") == "cross-site":
+        # Access login redirects are cross-site document navigations. Allow only
+        # the read-only homepage; API requests and embedded documents stay blocked.
+        homepage_navigation = (
+            request.method in {"GET", "HEAD"}
+            and request.path == "/"
+            and request.headers.get("Sec-Fetch-Mode") == "navigate"
+            and request.headers.get("Sec-Fetch-Dest") == "document"
+        )
+        if request.headers.get("Sec-Fetch-Site") == "cross-site" and not homepage_navigation:
             raise web.HTTPForbidden()
         if request.method not in {"GET", "HEAD"}:
             if not secrets.compare_digest(request.headers.get("X-CSRF-Token", ""), controller.csrf):
