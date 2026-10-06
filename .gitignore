@@ -8,6 +8,12 @@ __pycache__/
 config.yaml
 **/discord-webhooks.json
 data/
+*-logs/
+*.db
+*.db-wal
+*.db-shm
+**/ui-config.yaml
+backups/
 dist/
 build/
 output/playwright/

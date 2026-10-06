@@ -17,6 +17,7 @@
       <button type="button" data-view="channels"><span aria-hidden="true">#</span>Discord 頻道</button>
       <button type="button" data-view="settings"><span aria-hidden="true">☷</span>輪詢設定</button>
       <button type="button" data-view="events"><span aria-hidden="true">↗</span>事件紀錄</button>
+      <button type="button" data-view="logs"><span aria-hidden="true">≡</span>查詢紀錄</button>
     </nav>
     <div class="side-foot"><span class="local-dot"></span> 本機控制台<p>查票與通知，不自動購票。</p></div>
   </aside>
@@ -30,6 +31,7 @@
       <div class="section-bar"><h2>我的監控</h2><button class="quiet" data-action="refresh">↻ 更新狀態</button></div>
       <div id="target-list" class="target-list"><p class="muted">正在讀取監控…</p></div>
       <p class="footnote">初次觀測只建立基準；由無票轉有票時才通知。「暫無票券」會另外標示為釋票線索。</p>
+      <p class="footnote">「查詢一次」立即嘗試檢測，不等待例行排程；平台忙碌、封鎖或錯誤退避時仍需等待。</p>
     </section>
     <section id="channels-view" class="view" aria-labelledby="channels-heading" hidden>
       <div class="page-heading"><div><h1 id="channels-heading">Discord 頻道</h1><p>為不同演出選擇通知的地方。</p></div><button class="primary" data-action="add-channel">＋ 新增頻道</button></div>
@@ -52,6 +54,12 @@
     <section id="events-view" class="view" aria-labelledby="events-heading" hidden>
       <div class="page-heading"><div><h1 id="events-heading">事件紀錄</h1><p>最近的票況變化與 Discord 通知結果。</p></div><button class="quiet" data-action="refresh">↻ 更新紀錄</button></div>
       <div id="event-list" class="event-list"></div><p class="footnote">顯示最近 20 筆事件。「待送」不代表已送達，已送達會保留訊息 ID。</p>
+    </section>
+    <section id="logs-view" class="view" aria-labelledby="logs-heading" hidden>
+      <div class="page-heading"><div><h1 id="logs-heading">查詢紀錄</h1><p>每次檢測的結果與耗時，確認監控持續運作。</p></div><button class="quiet" data-action="refresh">↻ 更新紀錄</button></div>
+      <p id="log-error" class="banner error" role="alert" hidden></p>
+      <div id="query-log-list" class="event-list"></div>
+      <p class="footnote">顯示最近 100 筆。每 7 天輪替，保留目前與上一個週期，最長 14 天；日誌不含 Webhook 或活動網址。沒有查票的排程等待不重複記錄。</p>
     </section>
     <p id="last-refresh" class="last-refresh"></p>
   </main>

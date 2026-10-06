@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import random
+import time
 import uuid
 from collections import Counter
 from contextlib import asynccontextmanager
@@ -13,6 +14,7 @@ from .config import Config, Target
 from .models import Observation, Result, SourceError, TicketStatus, timestamp, utcnow
 from .notifications import DiscordNotifier
 from .platforms.ticketplus import TicketPlusAdapter
+from .query_log import QueryLog
 from .storage import Store
 from .transport import PublicTransport
 
@@ -90,6 +92,7 @@ class Watcher:
         self.config, self.clock = config, clock
         self.rng = rng or random.SystemRandom()
         self.store = Store(config.database_path)
+        self.query_log = QueryLog(self.store, config.database_path, clock)
         self._owns_client = client is None
         self.client = client or httpx.AsyncClient(
             timeout=config.timeout,
@@ -254,6 +257,21 @@ class Watcher:
         )
 
     async def query(
+        self, url: str, *, session_ids=(), item_ids=(), detail=False, limit=50, offset=0
+    ) -> Result:
+        started = time.monotonic()
+        result = await self._query(
+            url,
+            session_ids=session_ids,
+            item_ids=item_ids,
+            detail=detail,
+            limit=limit,
+            offset=offset,
+        )
+        self.query_log.record(None, "query", result, time.monotonic() - started)
+        return result
+
+    async def _query(
         self, url: str, *, session_ids=(), item_ids=(), detail=False, limit=50, offset=0
     ) -> Result:
         target = Target(
@@ -471,8 +489,17 @@ class Watcher:
                 )
         return changes, event_id, hint_event_id
 
-    async def check(self, ident: str, *, detail=False, limit=50, offset=0) -> Result:
-        result = await self._check(ident, detail=detail, limit=limit, offset=offset)
+    async def check(
+        self, ident: str, *, detail=False, limit=50, offset=0, immediate=False
+    ) -> Result:
+        result = await self._check(
+            ident,
+            detail=detail,
+            limit=limit,
+            offset=offset,
+            immediate=immediate,
+            mode="manual" if immediate else "check",
+        )
         if result.execution_status != "DEFERRED":
             await self.notifier.deliver()
         return self._notification_result(result)
@@ -485,7 +512,36 @@ class Watcher:
             )
         return result
 
-    async def _check(self, ident: str, *, detail=False, limit=50, offset=0) -> Result:
+    async def _check(
+        self, ident: str, *, detail=False, limit=50, offset=0, immediate=False, mode="scheduled"
+    ) -> Result:
+        self._target(ident)
+        started = time.monotonic()
+        try:
+            result = await self._perform_check(
+                ident, detail=detail, limit=limit, offset=offset, immediate=immediate
+            )
+        except BaseException as error:
+            result = Result(
+                "INTERRUPTED" if isinstance(error, asyncio.CancelledError) else "FAILED",
+                data={
+                    "error": {
+                        "code": "CANCELLED"
+                        if isinstance(error, asyncio.CancelledError)
+                        else "INTERNAL_ERROR"
+                    }
+                },
+            )
+            self.query_log.record(ident, mode, result, time.monotonic() - started)
+            raise
+        # Do not record the scheduler's repeated five-second cooldown checks.
+        if result.execution_status != "DEFERRED" or mode != "scheduled":
+            self.query_log.record(ident, mode, result, time.monotonic() - started)
+        return result
+
+    async def _perform_check(
+        self, ident: str, *, detail=False, limit=50, offset=0, immediate=False
+    ) -> Result:
         target = self._target(ident)
         if not target.enabled or (target.stop_at is not None and target.stop_at <= self.clock()):
             return self._deferred("TARGET_DISABLED_OR_STOPPED")
@@ -505,7 +561,10 @@ class Watcher:
             if schedule["paused_reason"]:
                 return self._deferred("TARGET_PAUSED")
             if schedule["next_check"] > self.clock():
-                return self._deferred("NOT_DUE", schedule["next_check"])
+                if not immediate or schedule["last_error"]:
+                    return self._deferred(
+                        "TARGET_BACKOFF" if immediate else "NOT_DUE", schedule["next_check"]
+                    )
             try:
                 observation = await self.adapter.fetch(target)
             except SourceError as error:
@@ -684,6 +743,7 @@ class Watcher:
     async def _heartbeat(self):
         stop = asyncio.Event()
         self.store.heartbeat(self.clock())
+        self.query_log.maintain()
         async with asyncio.TaskGroup() as tasks:
             tasks.create_task(self._heartbeat_loop(stop))
             try:
@@ -697,6 +757,7 @@ class Watcher:
                 await asyncio.wait_for(stop.wait(), timeout=HEARTBEAT_INTERVAL_SECONDS)
             except TimeoutError:
                 self.store.heartbeat(self.clock())
+                self.query_log.maintain()
 
     def health(self) -> Result:
         row = self.store.connection.execute(

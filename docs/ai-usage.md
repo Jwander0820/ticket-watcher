@@ -8,6 +8,7 @@
 | 看釋票與送達紀錄 | `events --target <id> --json` |
 | 單次查某活動 | `query --url <URL> --json` |
 | 授權檢查既有監控 | `check --target <id> --json` |
+| 明確要求當下檢查既有監控 | `check --target <id> --now --json` |
 | 授權外部排程執行一輪 | `tick --json` |
 
 status、events、check、tick 以 `--config` 指向監控程序相同設定。VPS 使用 Docker 時，用 `docker compose exec ticket-watcher ticket-watcher --config /app/config.yaml <操作>`。本機另一份 DB 不等於 VPS 狀態。
@@ -15,6 +16,8 @@ status、events、check、tick 以 `--config` 指向監控程序相同設定。V
 `query.evaluation.release_detected` 固定為 null；只有監控比較並建立 RELEASE 事件，才可稱偵測到由無票轉有票。RELEASE_HINT／release_hint_detected 是外頁「暫無票券」線索，不能宣稱目前有票。CACHE 結果報出原始觀測時間與資料年齡；UNKNOWN 保留的最後有效值不能當作目前已確認有票。
 
 DEFERRED 表示未查網站，遵守 next_allowed_at；平台暫停必須先人工確認問題再用 resume，不能自動解除或以別的出口繼續打。UNSUPPORTED 表示所需粒度不支援，不能忽略 item_ids 改成查整場。
+
+`--now` 只略過目標的例行排程，仍遵守平台租約、每次 HTTP 請求間隔、暫停及錯誤退避。這是監控檢查，可能產生釋票通知；只想查看且不通知時仍使用 `query`。
 
 通知入列 PENDING 不等於送達。僅 SENT 並有 message_id 可說 Discord 已確認送出。工具自行通知時 AI 不另外發 webhook。CLI token 成本來自 AI 讀參數與 JSON，監控迴圈本身不用模型。
 

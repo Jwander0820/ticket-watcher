@@ -137,6 +137,7 @@ class Controller:
             )
             targets.append({**value, "state": states.get(target.id, {})})
         configured = set(channel_urls(self.config))
+        query_logs = self.watcher.query_log.recent()
         return {
             "csrf": self.csrf,
             "revision": self.revision,
@@ -164,6 +165,7 @@ class Controller:
             "runner_error": self.runner_error,
             "external_changes": self.disk_revision() != self.revision,
             "events": self.watcher.events(limit=20).data,
+            "query_logs": {**query_logs, "error": self.watcher.query_log.error},
         }
 
 
@@ -326,7 +328,9 @@ async def action(request):
                 {"notification": c.watcher.store.notification_status(event_id)}
             )
         if kind == "check":
-            return web.json_response((await c.watcher.check(body.get("target_id"))).to_dict())
+            return web.json_response(
+                (await c.watcher.check(body.get("target_id"), immediate=True)).to_dict()
+            )
         if kind == "resume":
             return web.json_response(
                 c.watcher.resume(

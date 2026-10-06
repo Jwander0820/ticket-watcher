@@ -3,6 +3,12 @@
 .env
 config.yaml
 data
+**/*-logs
+**/*.db
+**/*.db-wal
+**/*.db-shm
+**/ui-config.yaml
+backups
 dist
 build
 output

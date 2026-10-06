@@ -6,7 +6,7 @@ from dataclasses import replace
 import httpx
 import pytest
 from aiohttp.test_utils import TestClient, TestServer
-from conftest import URL
+from conftest import URL, Source
 
 from ticket_watcher.config import Channel, load_config
 from ticket_watcher.models import Observation, TicketItem, TicketStatus
@@ -16,6 +16,41 @@ from ticket_watcher.web import CONTROLLER, create_app
 
 HOOK = "https://discord.com/api/webhooks/123/test_private_value"
 HOOK_TWO = "https://discord.com/api/webhooks/456/second_private_value"
+
+
+def test_ui_manual_check_ignores_routine_schedule_and_returns_logs(tmp_path):
+    async def scenario():
+        async with panel(tmp_path) as (client, c, requests):
+            response = await mutate(
+                client,
+                await snapshot(client),
+                "/api/targets",
+                {
+                    "name": "手動查詢",
+                    "url": URL,
+                    "enabled": True,
+                },
+            )
+            state = await response.json()
+            ident = state["targets"][0]["id"]
+            source = Source(c.watcher.clock)
+            c.watcher.adapter = source
+            source.push("SOLD_OUT")
+            source.push("SOLD_OUT")
+            for _ in range(2):
+                response = await client.post(
+                    "/api/actions/check",
+                    headers={"X-CSRF-Token": state["csrf"]},
+                    json={"revision": state["revision"], "target_id": ident},
+                )
+                assert (await response.json())["execution_status"] == "COMPLETED"
+            assert source.calls == 2
+            updated = await snapshot(client)
+            assert len(updated["query_logs"]["entries"]) == 2
+            assert updated["query_logs"]["entries"][0]["mode"] == "manual"
+            assert not requests
+
+    asyncio.run(scenario())
 
 
 @asynccontextmanager

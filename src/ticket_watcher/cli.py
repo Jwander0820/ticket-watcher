@@ -38,6 +38,10 @@ def parser() -> argparse.ArgumentParser:
             p.add_argument("--url", required=True)
             p.add_argument("--session-id", action="append", default=[])
             p.add_argument("--item-id", action="append", default=[])
+        if command == "check":
+            p.add_argument(
+                "--now", action="store_true", help="略過例行排程，仍遵守平台限流與錯誤退避"
+            )
         if command in {"status", "events", "check"}:
             p.add_argument("--target", required=command == "check")
         if command in {"query", "status", "events", "check"}:
@@ -84,7 +88,7 @@ async def execute(args) -> Result:
             case "events":
                 return watcher.events(args.target, detail=detail, **paging)
             case "check":
-                return await watcher.check(args.target, detail=detail, **paging)
+                return await watcher.check(args.target, detail=detail, immediate=args.now, **paging)
             case "tick":
                 return await watcher.tick()
             case "health":

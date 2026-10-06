@@ -5,6 +5,8 @@ const ticketLabels = {AVAILABLE:"有票", SOLD_OUT:"售完", UNKNOWN:"未知", U
 const noticeLabels = {PENDING:"待送", INFLIGHT:"傳送中", SENT:"已送達", CANCELLED:"已取消", EXPIRED:"已過期", FAILED:"傳送失敗", DISABLED:"不通知", NOT_REQUIRED:"不需通知"};
 const eventLabels = {RELEASE:"偵測到可購票", RELEASE_HINT:"發現釋票線索", SYSTEM:"系統通知", ERROR:"查詢異常", STATE_CHANGE:"票況變化"};
 let state = null, view = "targets", settingsDirty = false, refreshing = false, toastTimer;
+const checking = new Set();
+const reasonLabels = {NOT_DUE:"尚未到例行查詢時間", TARGET_BACKOFF:"前次查詢異常，等待退避期限", TARGET_DISABLED_OR_STOPPED:"監控已停用或到期", TARGET_PAUSED:"目標已暫停，需人工解除", PLATFORM_PAUSED:"平台已暫停，需人工處理", PLATFORM_BUSY_OR_BACKOFF:"平台正在查詢或等待限流期限", NETWORK:"網路異常", RATE_LIMITED:"平台限制頻率", BLOCKED:"平台拒絕存取", PARSE:"資料解析異常", UNSUPPORTED:"不支援的資料來源", INTERNAL_ERROR:"程序異常", CANCELLED:"服務重新載入或停止"};
 const dateText = (value) => value ? new Date(value).toLocaleString("zh-TW", {month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit",hour12:false}) : "尚無紀錄";
 const channelName = (id) => state.channels.find((channel) => channel.id === id)?.name || "未指定";
 function toast(message) {
@@ -38,6 +40,19 @@ function renderChannels() {
 function renderEvents() {
   $("#event-list").innerHTML = state.events.events.length ? state.events.events.map((e) => `<article class="event-row"><time datetime="${esc(e.created_at)}">${dateText(e.created_at)}</time><div><h2>${esc(eventLabels[e.kind] || e.kind)} · ${esc(state.targets.find((t) => t.id === e.target_id)?.name || e.payload.event_name || "系統")}</h2><p>${esc(e.payload.message || e.payload.code || (e.payload.changes_total != null ? `${e.payload.changes_total} 個項目變化` : ""))}</p>${e.message_id ? `<small>訊息 ${esc(e.message_id)}</small>` : ""}</div><div>${e.notification_status ? badge(e.notification_status) : badge("UNKNOWN","僅記錄")}</div></article>`).join("") : `<div class="empty"><h2>還沒有事件</h2><p>啟用監控後，票況變化與通知結果會顯示在這裡。</p></div>`;
 }
+function renderQueryLogs() {
+  const logs = state.query_logs || {entries:[]};
+  $("#log-error").hidden = !logs.error; $("#log-error").textContent = logs.error || "";
+  $("#query-log-list").innerHTML = logs.entries.length ? logs.entries.map((entry) => {
+    const name = state.targets.find((t) => t.id === entry.target_id)?.name || (entry.target_id ? "已移除的監控" : "單次公開查詢");
+    const label = entry.status === "COMPLETED" ? entry.complete ? "查詢成功" : "票況不完整" : {DEFERRED:"等待中",INTERRUPTED:"已中斷",FAILED:"查詢失敗",UNSUPPORTED:"不支援"}[entry.status] || entry.status;
+    const mode = {scheduled:"自動監控",manual:"手動查詢",check:"排程檢查",query:"單次查詢"}[entry.mode] || entry.mode;
+    const summary = Object.entries(entry.summary).map(([status,count]) => `${ticketLabels[status] || status} ${count}`).join("・");
+    const details = [summary,reasonLabels[entry.reason] || entry.reason,entry.release ? "偵測到可購票" : "",entry.hint ? "發現釋票線索" : ""].filter(Boolean).join("・");
+    const time = new Date(entry.time).toLocaleString("zh-TW",{hour12:false});
+    return `<article class="event-row"><time datetime="${esc(entry.time)}">${esc(time)}</time><div><h2>${esc(name)} · ${esc(mode)}</h2><p>${esc(details || "本次未發送外部查票請求")}</p><small>${entry.requests} 次請求 · ${(entry.duration_ms/1000).toFixed(1)} 秒${entry.next_at ? ` · 下次預定 ${dateText(entry.next_at)}` : ""}</small></div><div>${badge(entry.status === "COMPLETED" && entry.complete ? "AVAILABLE" : entry.status === "DEFERRED" ? "UNKNOWN" : "ERROR",label)}</div></article>`;
+  }).join("") : '<div class="empty"><h2>還沒有查詢紀錄</h2><p>從此版本開始記錄。完成自動或手動查詢後，這裡會顯示結果。</p></div>';
+}
 function fillSettings() {
   if (settingsDirty) return;
   const s = state.settings, form = $("#settings-form");
@@ -52,7 +67,10 @@ function render() {
   $("#global-error").textContent = warning; $("#global-error").hidden = !warning;
   $("#platform-warning").hidden = !state.health.platform_paused;
   $("#platform-warning").innerHTML = state.health.platform_paused ? `TicketPlus 平台已暫停查詢。確認存取問題處理完成後，再解除暫停。<button class="secondary" data-action="resume-platform">解除平台暫停</button>` : "";
-  renderTargets(); renderChannels(); renderEvents(); fillSettings();
+  renderTargets(); renderChannels(); renderEvents(); renderQueryLogs(); fillSettings();
+  document.querySelectorAll('[data-action="check"]').forEach((button) => {
+    if (checking.has(button.dataset.id)) { button.disabled = true; button.textContent = "查詢中…"; }
+  });
   $("#last-refresh").textContent = `上次更新 ${new Date().toLocaleTimeString("zh-TW",{hour12:false})} · 每 10 秒更新狀態`;
 }
 async function refresh() {
@@ -122,7 +140,7 @@ async function action(button) {
   const endpoint = kind === "resume-platform" ? "resume" : kind;
   const result = await api(`/api/actions/${endpoint}`, {method:"POST", body:{revision, target_id:id, channel_id:id, platform:kind === "resume-platform"}});
   if (kind === "test-channel") toast(`測試通知：${noticeLabels[result.notification.status] || result.notification.status}`);
-  else if (kind === "check") toast(result.execution_status === "DEFERRED" ? `目前尚不能查詢；下次可查：${dateText(result.next_allowed_at)}` : result.execution_status === "COMPLETED" ? "查詢完成，已更新票況。" : result.error?.message || "查詢失敗，已保留最後有效票況。");
+  else if (kind === "check") toast(result.execution_status === "DEFERRED" ? `${reasonLabels[result.reason] || "目前尚不能查詢"}${result.next_allowed_at ? `；等待至 ${dateText(result.next_allowed_at)}` : ""}` : result.execution_status === "COMPLETED" ? result.complete ? "查詢完成，已更新票況。" : "本次票況不完整，已保留最後有效票況。" : result.error?.message || "查詢失敗，已保留最後有效票況。");
   else toast("已解除暫停，等待排程查詢。");
   await refresh();
 }
@@ -131,8 +149,13 @@ document.addEventListener("click", async (event) => {
   if (button.dataset.close) return $(`#${button.dataset.close}`).close();
   if (button.dataset.view) return navigate(button.dataset.view);
   if (!button.dataset.action || !state) return;
+  const checkingId = button.dataset.action === "check" ? button.dataset.id : null;
+  if (checkingId) { if (checking.has(checkingId)) return; checking.add(checkingId); button.textContent = "查詢中…"; }
   button.disabled = true;
-  try { await action(button); } catch (error) { toast(error.message); } finally { button.disabled = false; }
+  try { await action(button); } catch (error) { toast(error.message); } finally {
+    button.disabled = false;
+    if (checkingId) { checking.delete(checkingId); render(); }
+  }
 });
 $("#reveal-webhook").addEventListener("click", () => {
   const input = $("#webhook-url"), showing = input.type === "password";
