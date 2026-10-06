@@ -1,5 +1,6 @@
 import asyncio
 import math
+from contextvars import ContextVar
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
 
@@ -29,9 +30,27 @@ def retry_after(value: str | None, now: float) -> float:
 class PublicTransport:
     def __init__(self, client: httpx.AsyncClient, store: Store, config: Config, clock=utcnow):
         self.client, self.store, self.config, self.clock = client, store, config, clock
-        self.owner = ""
-        self.count = 0
+        # A late request and its replacement can share this transport in the UI.
+        # Keep their identities/counters local to each task, not to the client.
+        self._owner = ContextVar("query_owner", default="")
+        self._count = ContextVar("query_count", default=0)
         self.lease_seconds = max(180, config.timeout * 4 + config.request_gap * 4 + 60)
+
+    @property
+    def owner(self):
+        return self._owner.get()
+
+    @owner.setter
+    def owner(self, value):
+        self._owner.set(value)
+
+    @property
+    def count(self):
+        return self._count.get()
+
+    @count.setter
+    def count(self, value):
+        self._count.set(value)
 
     async def get_json(self, url: str, params: dict) -> dict:
         while True:
@@ -43,8 +62,10 @@ class PublicTransport:
             await asyncio.sleep(min(delay, 30))
         self.count += 1
         try:
-            response = await self.client.get(url, params=params)
-        except httpx.HTTPError:
+            # HTTPX read timeouts bound each chunk, not the entire response.
+            async with asyncio.timeout(self.config.timeout):
+                response = await self.client.get(url, params=params)
+        except (httpx.HTTPError, TimeoutError):
             raise SourceError("NETWORK", "網路連線失敗或逾時") from None
         if response.status_code in (401, 403):
             raise SourceError("BLOCKED", f"網站拒絕存取（HTTP {response.status_code}），需人工處理")
@@ -74,4 +95,5 @@ class PublicTransport:
             raise SourceError("PARSE", "資料來源不是有效 JSON") from None
         if not isinstance(value, dict):
             raise SourceError("PARSE", "JSON 資料結構不正確")
+        self.store.require_lease(self.owner, self.clock())
         return value

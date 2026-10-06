@@ -7,6 +7,9 @@ const eventLabels = {RELEASE:"偵測到可購票", RELEASE_HINT:"發現釋票線
 let state = null, view = "targets", settingsDirty = false, refreshing = false, toastTimer;
 const checking = new Set();
 const reasonLabels = {NOT_DUE:"尚未到例行查詢時間", TARGET_BACKOFF:"前次查詢異常，等待退避期限", TARGET_DISABLED_OR_STOPPED:"監控已停用或到期", TARGET_PAUSED:"目標已暫停，需人工解除", PLATFORM_PAUSED:"平台已暫停，需人工處理", PLATFORM_BUSY_OR_BACKOFF:"平台正在查詢或等待限流期限", NETWORK:"網路異常", RATE_LIMITED:"平台限制頻率", BLOCKED:"平台拒絕存取", PARSE:"資料解析異常", UNSUPPORTED:"不支援的資料來源", INTERNAL_ERROR:"程序異常", CANCELLED:"服務重新載入或停止"};
+Object.assign(reasonLabels, {SHOW_STARTED:"選定場次均已開始，已自動停止", QUERY_SUPERSEDED:"查詢已過期或被接手，舊結果未寫入"});
+const effectiveStop = (target) => target.state?.effective_stop_at || target.stop_at;
+const isStopped = (target) => effectiveStop(target) && new Date(effectiveStop(target)) <= new Date();
 const dateText = (value) => value ? new Date(value).toLocaleString("zh-TW", {month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit",hour12:false}) : "尚無紀錄";
 const channelName = (id) => state.channels.find((channel) => channel.id === id)?.name || "未指定";
 function toast(message) {
@@ -24,14 +27,15 @@ function badge(status, label) {
   return `<span class="badge ${tone}">${esc(label || ticketLabels[status] || noticeLabels[status] || status)}</span>`;
 }
 function renderTargets() {
-  const enabled = state.targets.filter((t) => t.enabled && (!t.stop_at || new Date(t.stop_at) > new Date())).length;
-  $("#overview").innerHTML = `<div class="metric"><span>啟用監控</span><strong>${enabled}</strong><small>個目標</small></div><div class="metric"><span>全部場次</span><strong>${state.targets.length}</strong><small>個目標</small></div><div class="metric"><span>等待通知</span><strong>${state.health.pending_notifications}</strong><small>筆事件</small></div>`;
+  const enabled = state.targets.filter((t) => t.enabled && !isStopped(t)).length;
+  $("#overview").innerHTML = `<div class="metric"><span>啟用監控</span><strong>${enabled}</strong><small>個目標</small></div><div class="metric"><span>全部場次</span><strong>${state.targets.length}</strong><small>個目標</small></div><div class="metric"><span>等待通知</span><strong>${state.health.pending_notifications ?? "—"}</strong><small>筆事件</small></div>`;
   $("#target-list").innerHTML = state.targets.length ? state.targets.map((t) => {
-    const s = t.state, stopped = t.stop_at && new Date(t.stop_at) <= new Date(), on = t.enabled && !stopped;
-    const label = !t.enabled ? "已停用" : stopped ? "已到期" : s.paused_reason ? "已暫停" : "監控中";
+    const s = t.state, stopped = isStopped(t), on = t.enabled && !stopped;
+    const label = !t.enabled ? "已停用" : stopped ? (s.auto_stop_at === effectiveStop(t) ? "已停止" : "已到期") : s.paused_reason ? "已暫停" : "監控中";
     const summary = Object.entries(s.summary || {}).map(([status,count]) => badge(status, `${ticketLabels[status] || status} ${count}`)).join("") || badge("UNKNOWN","尚未查詢");
     const unknown = (s.current_observation?.UNKNOWN || 0) > 0;
-    return `<article class="ticket"><div class="ticket-stub ${on && !s.paused_reason ? "on" : ""}"><span>${t.url.includes("/order/") ? "票區／票種" : "活動場次"}</span><strong>${label}</strong></div><div class="ticket-main"><div class="ticket-heading"><h3 class="ticket-title">${esc(t.name)}</h3><a class="ticket-link" href="${esc(t.url)}" target="_blank" rel="noreferrer">購票頁 ↗</a></div><div class="badge-group" aria-label="最後有效票況">${summary}${unknown ? badge("ERROR","本次票況不完整") : ""}${s.mode === "ACTIVE" ? badge("AVAILABLE","快速模式") : ""}</div><dl class="ticket-details"><div><dt>上次完整觀測</dt><dd>${dateText(s.observed_at)}</dd></div><div><dt>下次預定查詢</dt><dd>${on ? dateText(s.next_allowed_at) : "—"}</dd></div><div><dt>Discord 通知頻道</dt><dd>${esc(channelName(t.channel_id))}</dd></div></dl><div class="ticket-actions"><button class="quiet" data-action="edit-target" data-id="${t.id}">編輯</button><button class="quiet" data-action="toggle-target" data-id="${t.id}">${t.enabled ? "停用" : "啟用"}</button><button class="quiet" data-action="check" data-id="${t.id}" ${!on ? "disabled" : ""}>查詢一次</button>${s.paused_reason ? `<button class="quiet" data-action="resume" data-id="${t.id}">解除暫停</button>` : ""}<button class="quiet danger" data-action="delete-target" data-id="${t.id}">刪除</button></div></div></article>`;
+    const stopText = effectiveStop(t) ? dateText(effectiveStop(t)) : t.auto_stop ? "待取得可靠場次時間" : "未設定";
+    return `<article class="ticket"><div class="ticket-stub ${on && !s.paused_reason ? "on" : ""}"><span>${t.url.includes("/order/") ? "票區／票種" : "活動場次"}</span><strong>${label}</strong></div><div class="ticket-main"><div class="ticket-heading"><h3 class="ticket-title">${esc(t.name)}</h3><a class="ticket-link" href="${esc(t.url)}" target="_blank" rel="noreferrer">購票頁 ↗</a></div><div class="badge-group" aria-label="最後有效票況">${summary}${stopped && s.auto_stop_at === effectiveStop(t) ? badge("ENDED","演出已開始") : ""}${unknown ? badge("ERROR","本次票況不完整") : ""}${s.mode === "ACTIVE" ? badge("AVAILABLE","快速模式") : ""}</div><dl class="ticket-details"><div><dt>上次完整觀測</dt><dd>${dateText(s.observed_at)}</dd></div><div><dt>下次預定查詢</dt><dd>${on ? dateText(s.next_allowed_at) : "—"}</dd></div><div><dt>Discord 通知頻道</dt><dd>${esc(channelName(t.channel_id))}</dd></div><div><dt>停止監控時間</dt><dd>${esc(stopText)}${s.stopped_session_count ? ` · ${s.stopped_session_count} 場已開始` : ""}</dd></div></dl><div class="ticket-actions"><button class="quiet" data-action="edit-target" data-id="${t.id}">編輯</button><button class="quiet" data-action="toggle-target" data-id="${t.id}">${t.enabled ? "停用" : "啟用"}</button><button class="quiet" data-action="check" data-id="${t.id}" ${!on ? "disabled" : ""}>查詢一次</button>${s.paused_reason ? `<button class="quiet" data-action="resume" data-id="${t.id}">解除暫停</button>` : ""}<button class="quiet danger" data-action="delete-target" data-id="${t.id}">刪除</button></div></div></article>`;
   }).join("") : `<div class="empty"><div class="empty-ticket" aria-hidden="true"></div><h2>留意下一張好票</h2><p>新增 TicketPlus 活動或場次網址。先設定監控與通知頻道，再開始追蹤票況。</p><button class="primary" data-action="add-target">＋ 新增第一個監控</button></div>`;
 }
 function renderChannels() {
@@ -104,6 +108,7 @@ function openTarget(id) {
   if (target) {
     ["name","url","channel_id"].forEach((key) => { form.elements[key].value = target[key]; });
     form.elements.enabled.checked = target.enabled;
+    form.elements.auto_stop.checked = target.auto_stop !== false;
     form.elements.session_ids.value = target.session_ids.join(", "); form.elements.item_ids.value = target.item_ids.join(", ");
     if (target.stop_at) { const date = new Date(target.stop_at); form.elements.stop_at.value = new Date(date - date.getTimezoneOffset()*60000).toISOString().slice(0,16); }
   } else if (state.channels.some((c) => c.configured)) form.elements.channel_id.value = state.channels.find((c) => c.configured).id;
@@ -127,7 +132,7 @@ function confirmAction(text, accept="確認") {
     dialog.showModal();
   });
 }
-function targetValue(target) { const {name,url,enabled,session_ids,item_ids,stop_at,channel_id} = target; return {name,url,enabled,session_ids,item_ids,stop_at,channel_id}; }
+function targetValue(target) { const {name,url,enabled,session_ids,item_ids,stop_at,channel_id,auto_stop} = target; return {name,url,enabled,session_ids,item_ids,stop_at,channel_id,auto_stop}; }
 async function action(button) {
   const kind = button.dataset.action, id = button.dataset.id;
   if (kind === "add-target" || kind === "edit-target") return openTarget(id);
@@ -184,7 +189,7 @@ document.querySelectorAll("form").forEach((form) => form.addEventListener("submi
     let path, value, message;
     const f = form.elements;
     if (form.id === "target-form") {
-      value = {name:f.name.value.trim(),url:f.url.value.trim(),channel_id:f.channel_id.value,enabled:f.enabled.checked,session_ids:ids(f.session_ids.value),item_ids:ids(f.item_ids.value),stop_at:f.stop_at.value ? new Date(f.stop_at.value).toISOString() : null};
+      value = {name:f.name.value.trim(),url:f.url.value.trim(),channel_id:f.channel_id.value,enabled:f.enabled.checked,auto_stop:f.auto_stop.checked,session_ids:ids(f.session_ids.value),item_ids:ids(f.item_ids.value),stop_at:f.stop_at.value ? new Date(f.stop_at.value).toISOString() : null};
       path = "/api/targets"; message = "已儲存監控";
     } else if (form.id === "channel-form") {
       value = {name:f.name.value.trim(),webhook_url:f.webhook_url.value.trim()}; path = "/api/channels"; message = "已儲存頻道";

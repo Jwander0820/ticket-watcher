@@ -20,6 +20,10 @@ CREATE TABLE IF NOT EXISTS items (
  release_sequence INTEGER NOT NULL DEFAULT 0, details TEXT NOT NULL,
  PRIMARY KEY(target_id, item_key)
 );
+CREATE TABLE IF NOT EXISTS target_schedules (
+ target_id TEXT PRIMARY KEY REFERENCES targets(id) ON DELETE CASCADE,
+ sessions TEXT NOT NULL, stop_at REAL
+);
 CREATE TABLE IF NOT EXISTS events (
  id TEXT PRIMARY KEY, target_id TEXT, kind TEXT NOT NULL,
  created_at REAL NOT NULL, payload TEXT NOT NULL
@@ -46,6 +50,10 @@ CREATE INDEX IF NOT EXISTS outbox_due ON outbox(status, next_attempt);
 CREATE INDEX IF NOT EXISTS events_created ON events(created_at);
 PRAGMA user_version=2;
 """
+
+
+class LeaseLost(Exception):
+    """A superseded query must not write results or error state."""
 
 
 class Store:
@@ -110,6 +118,23 @@ class Store:
             )
         ]
 
+    def target_schedule(self, target: Target) -> dict | None:
+        row = self.connection.execute(
+            """SELECT s.sessions,s.stop_at FROM target_schedules s
+             JOIN targets t ON t.id=s.target_id WHERE t.id=? AND t.signature=?""",
+            (target.id, target.signature),
+        ).fetchone()
+        return {"sessions": json.loads(row["sessions"]), "stop_at": row["stop_at"]} if row else None
+
+    def save_schedule(self, db, target_id: str, sessions: dict):
+        # Stop the whole target only when every selected session has a reliable time.
+        deadline = max(sessions.values()) if sessions and None not in sessions.values() else None
+        db.execute(
+            """INSERT INTO target_schedules VALUES(?,?,?) ON CONFLICT(target_id)
+             DO UPDATE SET sessions=excluded.sessions,stop_at=excluded.stop_at""",
+            (target_id, json.dumps(sessions), deadline),
+        )
+
     def item_counts(self, ident: str) -> tuple[dict, dict]:
         valid, observed = {}, {}
         for row in self.connection.execute(
@@ -153,11 +178,16 @@ class Store:
             (owner,),
         )
 
+    def require_lease(self, owner: str, now: float):
+        state = self.platform()
+        if state["lease_owner"] != owner or state["lease_until"] <= now:
+            raise LeaseLost
+
     def reserve_request(self, owner: str, now: float, gap: float, lease_seconds: float) -> float:
         with self.transaction() as db:
             state = db.execute("SELECT * FROM platform WHERE id='ticketplus'").fetchone()
             if state["lease_owner"] != owner or state["lease_until"] <= now:
-                raise RuntimeError("平台查詢租約已失效")
+                raise LeaseLost
             if state["next_request"] > now:
                 return state["next_request"] - now
             db.execute(
@@ -173,11 +203,20 @@ class Store:
         ).fetchone()
         return json.loads(row[0]) if row else None
 
-    def cache_metadata(self, key: str, value: dict, expires_at: float):
-        self.connection.execute(
-            "INSERT OR REPLACE INTO metadata VALUES(?,?,?)",
-            (key, expires_at, json.dumps(value, ensure_ascii=False)),
-        )
+    def cache_metadata(self, key: str, value: dict, expires_at: float, *, owner=None, clock=None):
+        with self.transaction() as db:
+            if owner is not None:
+                self.require_lease(owner, clock())
+            db.execute(
+                "INSERT OR REPLACE INTO metadata VALUES(?,?,?)",
+                (key, expires_at, json.dumps(value, ensure_ascii=False)),
+            )
+
+    def discard_metadata(self, key: str, *, owner, clock):
+        with self.transaction() as db:
+            if owner is not None:
+                self.require_lease(owner, clock())
+            db.execute("DELETE FROM metadata WHERE key=?", (key,))
 
     def enqueue(
         self,

@@ -5,6 +5,7 @@ from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
 from ..config import Target, validate_url
 from ..models import Observation, SourceError, TicketItem, TicketStatus
+from ..schedule import session_start
 from ..transport import PublicTransport
 
 # Public URL obfuscation constants from TicketPlus's own frontend module 9263.
@@ -82,7 +83,13 @@ class TicketPlusAdapter:
             ):
                 raise SourceError("PARSE", "活動或場次靜態資料結構改變")
             metadata = {"title": event["title"], "sessions": sessions["sessions"]}
-            self.transport.store.cache_metadata(event_id, metadata, self.transport.clock() + 3600)
+            self.transport.store.cache_metadata(
+                event_id,
+                metadata,
+                self.transport.clock() + 3600,
+                owner=self.transport.owner,
+                clock=self.transport.clock,
+            )
         visible = []
         for session in metadata["sessions"]:
             if not isinstance(session, dict):
@@ -97,7 +104,9 @@ class TicketPlusAdapter:
         available_ids = {x[0] for x in visible}
         if wanted - available_ids:
             # Don't cache a stale list after detecting a requested session is missing.
-            self.transport.store.connection.execute("DELETE FROM metadata WHERE key=?", (event_id,))
+            self.transport.store.discard_metadata(
+                event_id, owner=self.transport.owner, clock=self.transport.clock
+            )
             raise SourceError(
                 "PARSE" if cached else "UNSUPPORTED", "指定場次不在此活動的公開場次清單"
             )
@@ -164,6 +173,11 @@ class TicketPlusAdapter:
             source="ticketplus-public-v2/session",
             complete=all(x.status != TicketStatus.UNKNOWN for x in items),
             request_count=self.transport.count - before,
+            session_starts={
+                ident: session_start(session.get("date"), session.get("time"))
+                for ident, session in visible
+                if not wanted or ident in wanted
+            },
         )
 
     async def _inventory(
@@ -194,7 +208,13 @@ class TicketPlusAdapter:
             )
             if not isinstance(static.get(collection), list):
                 raise SourceError("PARSE", "票區或票種靜態資料結構改變")
-            self.transport.store.cache_metadata(cache_key, static, self.transport.clock() + 3600)
+            self.transport.store.cache_metadata(
+                cache_key,
+                static,
+                self.transport.clock() + 3600,
+                owner=self.transport.owner,
+                clock=self.transport.clock,
+            )
         visible = {}
         for row in static[collection]:
             if not isinstance(row, dict) or not isinstance(row.get("sessionId"), str):
@@ -209,8 +229,8 @@ class TicketPlusAdapter:
             visible[ident] = row
         wanted = {internal_id(x, prefix) for x in target.item_ids}
         if wanted - set(visible):
-            self.transport.store.connection.execute(
-                "DELETE FROM metadata WHERE key=?", (cache_key,)
+            self.transport.store.discard_metadata(
+                cache_key, owner=self.transport.owner, clock=self.transport.clock
             )
             raise SourceError("PARSE" if cached else "UNSUPPORTED", "指定項目不在此場次的公開清單")
         if not visible:
@@ -277,6 +297,7 @@ class TicketPlusAdapter:
             granularity="AREA" if is_area else "PRODUCT",
             complete=all(x.status != TicketStatus.UNKNOWN for x in items),
             request_count=self.transport.count - before,
+            session_starts={session_id: session_start(session.get("date"), session.get("time"))},
         )
 
 

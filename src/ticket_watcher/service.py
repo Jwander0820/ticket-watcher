@@ -15,7 +15,8 @@ from .models import Observation, Result, SourceError, TicketStatus, timestamp, u
 from .notifications import DiscordNotifier
 from .platforms.ticketplus import TicketPlusAdapter
 from .query_log import QueryLog
-from .storage import Store
+from .schedule import stop_info, stopped_sessions
+from .storage import LeaseLost, Store
 from .transport import PublicTransport
 
 log = logging.getLogger(__name__)
@@ -128,6 +129,9 @@ class Watcher:
             },
         )
 
+    def _stop_info(self, target: Target) -> dict:
+        return stop_info(target, self.store.target_schedule(target), self.clock())
+
     async def _fetch(self, target: Target):
         owner = str(uuid.uuid4())
         state = self.store.acquire(owner, self.clock(), self.transport.lease_seconds)
@@ -139,15 +143,18 @@ class Watcher:
             )
         self.transport.owner, self.transport.count = owner, 0
         try:
-            observation = await self.adapter.fetch(target)
-            if observation.complete:
-                # Query shares platform backoff but must not change ticket baselines.
-                self.store.connection.execute(
-                    "UPDATE platform SET failures=0 WHERE id='ticketplus'"
-                )
+            try:
+                observation = await self.adapter.fetch(target)
+            except SourceError as error:
+                return self._error(error, owner=owner)
+            with self.store.transaction() as db:
+                self.store.require_lease(owner, self.clock())
+                if observation.complete:
+                    # Query shares platform backoff but must not change ticket baselines.
+                    db.execute("UPDATE platform SET failures=0 WHERE id='ticketplus'")
             return observation
-        except SourceError as error:
-            return self._error(error)
+        except LeaseLost:
+            return self._deferred("QUERY_SUPERSEDED")
         finally:
             # State application is protected by the same lease in check(), below.
             self.store.release(owner)
@@ -165,9 +172,25 @@ class Watcher:
             channel_id=self._target(target_id).channel_id if target_id else "default",
         )
 
-    def _error(self, error: SourceError, target: Target | None = None) -> Result:
+    def _error(self, error: SourceError, target: Target | None = None, *, owner=None) -> Result:
         now = self.clock()
         with self.store.transaction() as db:
+            if owner is not None:
+                try:
+                    self.store.require_lease(owner, self.clock())
+                except LeaseLost:
+                    # A late observation cannot change baselines or failure counts,
+                    # but real server restrictions still apply to the shared platform.
+                    if error.code == "RATE_LIMITED":
+                        db.execute(
+                            "UPDATE platform SET blocked_until=max(blocked_until,?) WHERE id='ticketplus'",
+                            (self.clock() + max(self.config.backoff[0], error.retry_after),),
+                        )
+                    elif error.code == "BLOCKED":
+                        db.execute(
+                            "UPDATE platform SET paused_reason='BLOCKED' WHERE id='ticketplus'"
+                        )
+                    return self._deferred("QUERY_SUPERSEDED")
             platform = self.store.platform()
             if error.code == "BLOCKED" and not platform["paused_reason"]:
                 db.execute("UPDATE platform SET paused_reason='BLOCKED' WHERE id='ticketplus'")
@@ -293,20 +316,28 @@ class Watcher:
         )
 
     def _apply(
-        self, target: Target, observation: Observation
+        self, target: Target, observation: Observation, *, owner=None
     ) -> tuple[list[dict], str | None, str | None]:
         now = observation.observed_at
         changes, releases, hints, unavailable, no_hints = [], [], [], set(), set()
         with self.store.transaction() as db:
+            if owner is not None:
+                self.store.require_lease(owner, self.clock())
             old = self.store.target(target.id)
             if old["source"] and old["source"] != observation.source:
                 db.execute("DELETE FROM items WHERE target_id=?", (target.id,))
+                db.execute("DELETE FROM target_schedules WHERE target_id=?", (target.id,))
                 db.execute(
                     """UPDATE outbox SET status='CANCELLED' WHERE status IN ('PENDING','INFLIGHT') AND event_id IN
                  (SELECT id FROM events WHERE target_id=?)""",
                     (target.id,),
                 )
                 old = {**old, "mode": "NORMAL", "active_until": None, "no_available": 0}
+            if observation.session_starts is not None:
+                self.store.save_schedule(db, target.id, observation.session_starts)
+            schedule = self.store.target_schedule(target)
+            stopped = stopped_sessions(target, schedule, self.clock())
+            target_stopped = bool(stop_info(target, schedule, self.clock())["stop_reason"])
             existing = {x["item_key"]: x for x in self.store.items(target.id)}
             observed_keys = set()
             for item in observation.items:
@@ -320,6 +351,8 @@ class Watcher:
                 sequence = previous["release_sequence"] if previous else 0
                 if (
                     valid
+                    and not target_stopped
+                    and item.session_id not in stopped
                     and previous
                     and previous["last_valid"]
                     and previous["last_valid"] != item.status
@@ -366,6 +399,11 @@ class Watcher:
                     ),
                 )
             missing = set(existing) - observed_keys
+            missing = {
+                key
+                for key in missing
+                if json.loads(existing[key]["details"])["session_id"] not in stopped
+            }
             for key in missing:
                 db.execute(
                     "UPDATE items SET observed='UNKNOWN',observed_at=? WHERE target_id=? AND item_key=?",
@@ -380,7 +418,10 @@ class Watcher:
             elif complete:
                 no_available = (
                     0
-                    if any(x.status == TicketStatus.AVAILABLE for x in observation.items)
+                    if any(
+                        x.status == TicketStatus.AVAILABLE and x.session_id not in stopped
+                        for x in observation.items
+                    )
                     else no_available + 1
                 )
             mode = (
@@ -545,6 +586,8 @@ class Watcher:
         target = self._target(ident)
         if not target.enabled or (target.stop_at is not None and target.stop_at <= self.clock()):
             return self._deferred("TARGET_DISABLED_OR_STOPPED")
+        if self._stop_info(target)["stop_reason"]:
+            return self._deferred("SHOW_STARTED")
         owner = str(uuid.uuid4())
         state = self.store.acquire(owner, self.clock(), self.transport.lease_seconds)
         if state:
@@ -568,9 +611,9 @@ class Watcher:
             try:
                 observation = await self.adapter.fetch(target)
             except SourceError as error:
-                result = self._error(error, target)
+                result = self._error(error, target, owner=owner)
             else:
-                changes, event_id, hint_event_id = self._apply(target, observation)
+                changes, event_id, hint_event_id = self._apply(target, observation, owner=owner)
                 result = Result(
                     result_source="LIVE",
                     data={
@@ -590,6 +633,7 @@ class Watcher:
                         "hint_event_id": hint_event_id,
                         "complete": self.store.target(ident)["last_error"] is None,
                         "next_allowed_at": timestamp(self.store.target(ident)["next_check"]),
+                        **self._stop_info(target),
                     },
                 )
                 log.info(
@@ -599,6 +643,8 @@ class Watcher:
                     bool(event_id),
                     observation.request_count,
                 )
+        except LeaseLost:
+            return self._deferred("QUERY_SUPERSEDED")
         finally:
             self.store.release(owner)
         return result
@@ -609,9 +655,10 @@ class Watcher:
         ids = [ident] if ident else [x.id for x in self.config.targets]
         targets = []
         for key in ids:
+            stopping = self._stop_info(self._target(key))
             state = self.store.target(key)
             if not state:
-                targets.append({"target_id": key, "state": "NOT_CHECKED"})
+                targets.append({"target_id": key, "state": "NOT_CHECKED", **stopping})
                 continue
             summary, current = self.store.item_counts(key)
             result = {
@@ -629,6 +676,7 @@ class Watcher:
                 "last_error": state["last_error"],
                 "summary": summary,
                 "current_observation": current,
+                **stopping,
             }
             if detail:
                 total = sum(summary.values())
@@ -693,9 +741,7 @@ class Watcher:
     async def _check_due(self, wakeup: asyncio.Event) -> list[Result]:
         results = []
         enabled_ids = {
-            t.id
-            for t in self.config.targets
-            if t.enabled and (t.stop_at is None or t.stop_at > self.clock())
+            t.id for t in self.config.targets if t.enabled and not self._stop_info(t)["stop_reason"]
         }
         with self.store.transaction() as db:
             for row in db.execute(

@@ -14,6 +14,8 @@ from ticket_watcher.platforms.ticketplus import (
 
 
 class SampleTransport:
+    owner = None  # Parser-only fixture; no HTTP request/lease is exercised.
+
     def __init__(self, harness, statuses=None):
         self.store = harness["watcher"].store
         self.clock = harness["clock"]

@@ -44,6 +44,7 @@ class Target:
     stop_at: float | None = None
     platform: str = "ticketplus"
     channel_id: str = "default"
+    auto_stop: bool = True
 
     @property
     def signature(self) -> str:
@@ -211,6 +212,7 @@ def parse_config(data: dict, directory: Path) -> Config:
             "item_ids",
             "stop_at",
             "channel_id",
+            "auto_stop",
         }:
             raise ValueError("監控目標欄位不正確")
         ident = entry.get("id", "")
@@ -250,6 +252,7 @@ def parse_config(data: dict, directory: Path) -> Config:
                 *filters,
                 stop,
                 channel_id=channel,
+                auto_stop=_bool(entry.get("auto_stop", True)),
             )
         )
     return Config(

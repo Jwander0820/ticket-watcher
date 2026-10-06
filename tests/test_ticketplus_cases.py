@@ -2,6 +2,7 @@ import asyncio
 import copy
 import json
 from dataclasses import replace
+from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -22,6 +23,8 @@ CASES = json.loads(
 
 class CaseTransport:
     """Recorded public responses, with batch behavior matching the public API."""
+
+    owner = None  # Parser-only fixture; no HTTP request/lease is exercised.
 
     def __init__(self, harness, event):
         self.store = harness["watcher"].store
@@ -179,6 +182,8 @@ def test_more_than_100_areas_are_batched_without_truncation(harness):
 
 def test_order_product_release_compares_quantity_and_formats_ticket_name(harness, monkeypatch):
     h = harness
+    # This fixture performs on October 9; test the release before its automatic stop.
+    h["clock"].now = datetime.fromisoformat("2026-10-06T12:00:00+08:00").timestamp()
     target = Target("test", "test", ORDER, item_ids=("p000017500",))
     h["watcher"].config = replace(h["config"], targets=(target,))
     h["watcher"].notifier.config = h["watcher"].config

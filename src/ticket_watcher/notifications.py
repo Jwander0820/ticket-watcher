@@ -12,6 +12,7 @@ import httpx
 from .config import Config
 from .models import utcnow
 from .private_io import read_webhooks
+from .schedule import stop_info, stopped_sessions
 from .storage import Store
 from .transport import retry_after
 
@@ -65,6 +66,7 @@ class DiscordNotifier:
 
     def _format(self, notice: dict) -> dict | None:
         payload = notice["payload"]
+        stopped = set()
         if payload.get("worker_alert") and (
             not self.config.worker_alerts
             or payload.get("channel_id", "default") != self.config.worker_alert_channel
@@ -80,9 +82,12 @@ class DiscordNotifier:
                 or target.signature != state["signature"]
                 or payload.get("target_signature", state["signature"]) != state["signature"]
                 or payload.get("channel_id", "default") != target.channel_id
-                or (target.stop_at is not None and target.stop_at <= self.clock())
+                or stop_info(target, self.store.target_schedule(target), self.clock())[
+                    "stop_reason"
+                ]
             ):
                 return None
+            stopped = stopped_sessions(target, self.store.target_schedule(target), self.clock())
         if notice["kind"] == "SYSTEM":
             content = f"Ticket Watcher｜{payload['message']}\n事件：{notice['event_id']}"
         else:
@@ -94,6 +99,7 @@ class DiscordNotifier:
                 x
                 for x in payload["changes"]
                 if x["item_key"] not in excluded
+                and x["item"]["session_id"] not in stopped
                 and x["item_key"] in states
                 and states[x["item_key"]]["last_valid"] == expected
             ]

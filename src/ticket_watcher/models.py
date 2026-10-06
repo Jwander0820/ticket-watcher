@@ -54,6 +54,7 @@ class Observation:
     granularity: str = "SESSION"
     complete: bool = True
     request_count: int = 0
+    session_starts: dict[str, float | None] | None = None
 
 
 class SourceError(Exception):

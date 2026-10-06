@@ -17,6 +17,7 @@ import yaml
 from aiohttp import web
 
 from .config import parse_config
+from .models import utcnow
 from .notifications import channel_urls, validate_webhook, webhook_url
 from .private_io import atomic_text, read_webhooks
 from .service import Watcher
@@ -58,6 +59,7 @@ class Controller:
         self.runner_error = None
         self.restart_count = 0
         self.retry_at = None
+        self.actions = set()
 
     async def start(self):
         if not self.path.exists():
@@ -76,31 +78,43 @@ class Controller:
         return hashlib.sha256(content).hexdigest()
 
     def _start_worker(self):
-        self.watcher = self.factory(self.config)
         self.runner_error = None
+        startup_error = None
+        try:
+            self.watcher = self.factory(self.config)
+        except Exception as error:
+            if not self.monitor:
+                raise
+            startup_error = error
+            self.runner_error = "監控啟動失敗，正在自動重試。"
         if self.monitor:
-            self.task = asyncio.create_task(self._run())
+            self.task = asyncio.create_task(self._run(startup_error))
 
-    async def _run(self):
+    async def _run(self, startup_error=None):
         failures = 0
         incident = None
         while True:
             try:
-                if failures:
+                if startup_error is not None:
+                    error, startup_error = startup_error, None
+                    raise error
+                if failures or self.watcher is None:
                     # Serialize replacement with manual queries and settings saves.
                     # Keep the old instance readable if constructing a replacement fails.
                     async with self.lock:
+                        await self._stop_actions()
                         replacement = self.factory(self.config)
                         old, self.watcher = self.watcher, replacement
-                        cleanup = asyncio.create_task(old.__aexit__(None, None, None))
-                        try:
-                            await asyncio.shield(cleanup)
-                        except asyncio.CancelledError:
-                            with suppress(Exception):
-                                await cleanup
-                            raise
-                        except Exception as error:
-                            log.error("ui_worker_cleanup_failed type=%s", type(error).__name__)
+                        if old is not None:
+                            cleanup = asyncio.create_task(old.__aexit__(None, None, None))
+                            try:
+                                await asyncio.shield(cleanup)
+                            except asyncio.CancelledError:
+                                with suppress(Exception):
+                                    await cleanup
+                                raise
+                            except Exception as error:
+                                log.error("ui_worker_cleanup_failed type=%s", type(error).__name__)
                     self.restart_count += 1
                     self.retry_at = None
                     self.runner_error = "監控已重新啟動，正在確認穩定運作。"
@@ -136,7 +150,7 @@ class Controller:
                 delay = WORKER_RETRY_SECONDS[min(failures, len(WORKER_RETRY_SECONDS) - 1)]
                 failures += 1
                 incident = incident or str(uuid.uuid4())
-                self.retry_at = self.watcher.clock() + delay
+                self.retry_at = (self.watcher.clock() if self.watcher else utcnow()) + delay
                 self.runner_error = (
                     f"監控意外中止，將於 {delay} 秒後自動重試（連續異常 {failures} 次）。"
                 )
@@ -156,6 +170,8 @@ class Controller:
                 )
 
     def _worker_event(self, event_id, message):
+        if self.watcher is None:
+            return
         try:
             with self.watcher.store.transaction() as db:
                 if not db.execute("SELECT 1 FROM events WHERE id=?", (event_id,)).fetchone():
@@ -174,11 +190,26 @@ class Controller:
             log.error("ui_worker_event_failed type=%s", type(error).__name__)
 
     async def _deliver_worker_event(self, event_id, timeout):
+        if self.watcher is None:
+            return
         try:
             async with asyncio.timeout(timeout):
                 await self.watcher.notifier.deliver(max_messages=1, event_id=event_id)
         except Exception as error:
             log.error("ui_worker_alert_failed type=%s", type(error).__name__)
+
+    def begin_action(self, coroutine):
+        task = asyncio.create_task(coroutine)
+        self.actions.add(task)
+        task.add_done_callback(self.actions.discard)
+        return task
+
+    async def _stop_actions(self):
+        tasks = list(self.actions)
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
 
     async def close(self):
         if self.task:
@@ -186,6 +217,7 @@ class Controller:
             with suppress(asyncio.CancelledError):
                 await self.task
             self.task = None
+        await self._stop_actions()
         if self.watcher:
             await self.watcher.__aexit__(None, None, None)
             self.watcher = None
@@ -235,7 +267,11 @@ class Controller:
         }
 
     def state(self):
-        states = {s["target_id"]: s for s in self.watcher.status().data["targets"]}
+        states = (
+            {s["target_id"]: s for s in self.watcher.status().data["targets"]}
+            if self.watcher
+            else {}
+        )
         targets = []
         for target in self.config.targets:
             value = asdict(target)
@@ -244,7 +280,11 @@ class Controller:
             )
             targets.append({**value, "state": states.get(target.id, {})})
         configured = set(channel_urls(self.config))
-        query_logs = self.watcher.query_log.recent()
+        query_logs = (
+            {**self.watcher.query_log.recent(), "error": self.watcher.query_log.error}
+            if self.watcher
+            else {"entries": [], "cycle_started_at": None, "error": None}
+        )
         return {
             "csrf": self.csrf,
             "revision": self.revision,
@@ -270,13 +310,27 @@ class Controller:
                     for c in self.config.channels
                 ],
             ],
-            "health": self.watcher.health().data,
+            "health": self.watcher.health().data
+            if self.watcher
+            else {
+                "process_healthy": False,
+                "last_heartbeat": None,
+                "platform_paused": None,
+                "pending_notifications": None,
+                "observations": [],
+            },
             "runner_active": self.task is not None and not self.task.done(),
             "runner_error": self.runner_error,
             "worker_recovery": {"restart_count": self.restart_count, "retry_at": self.retry_at},
             "external_changes": self.disk_revision() != self.revision,
-            "events": self.watcher.events(limit=20).data,
-            "query_logs": {**query_logs, "error": self.watcher.query_log.error},
+            "events": self.watcher.events(limit=20).data
+            if self.watcher
+            else {
+                "events": [],
+                "total": 0,
+                "next_offset": None,
+            },
+            "query_logs": query_logs,
         }
 
 
@@ -389,6 +443,7 @@ async def mutate(request):
                         "item_ids",
                         "stop_at",
                         "channel_id",
+                        "auto_stop",
                     }:
                         raise ValueError
                     if (
@@ -427,6 +482,8 @@ async def action(request):
         raise ValueError
     async with c.lock:
         c.require_revision(body.get("revision"))
+        if c.watcher is None:
+            raise Conflict("監控正在重新啟動，請稍後再試。")
         kind = request.match_info["action"]
         if kind == "test-channel":
             ident = body.get("channel_id")
@@ -445,21 +502,36 @@ async def action(request):
                     True,
                     channel_id=ident,
                 )
-            await c.watcher.notifier.deliver(max_messages=1, event_id=event_id)
-            return web.json_response(
-                {"notification": c.watcher.store.notification_status(event_id)}
-            )
-        if kind == "check":
-            return web.json_response(
-                (await c.watcher.check(body.get("target_id"), immediate=True)).to_dict()
-            )
-        if kind == "resume":
+            task = c.begin_action(deliver_test(c.watcher, event_id))
+        elif kind == "check":
+            task = c.begin_action(manual_check(c.watcher, body.get("target_id")))
+        elif kind == "resume":
             return web.json_response(
                 c.watcher.resume(
                     body.get("target_id"), platform=body.get("platform") is True
                 ).to_dict()
             )
-        raise web.HTTPNotFound()
+        else:
+            raise web.HTTPNotFound()
+    # The watcher is borrowed by a tracked task. Reload/recovery cancels and
+    # drains it before closing its connections, without blocking status reads.
+    try:
+        return web.json_response(await task)
+    except asyncio.CancelledError:
+        if asyncio.current_task().cancelling():
+            raise
+        raise Conflict("設定已重新載入或監控正在重啟，本次操作已中止。") from None
+
+
+async def manual_check(watcher, ident):
+    result = await watcher._check(ident, immediate=True, mode="manual")
+    # The running delivery loop handles the outbox; don't wait for Discord here.
+    return watcher._notification_result(result).to_dict()
+
+
+async def deliver_test(watcher, event_id):
+    await watcher.notifier.deliver(max_messages=1, event_id=event_id)
+    return {"notification": watcher.store.notification_status(event_id)}
 
 
 def create_app(path: Path, *, watcher_factory=Watcher, monitor=True):

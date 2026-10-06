@@ -36,4 +36,5 @@ targets:
     source: auto
     session_ids: []
     item_ids: []  # order 網址可篩選 a000... 票區或 p000... 票種；activity 不接受
-    stop_at: null  # 例如 '2026-11-29T23:00:00+08:00'
+    auto_stop: true  # 依選定場次的演出開始時間自動停止；無可靠時間時繼續監控
+    stop_at: null  # 額外指定停止時間，例如 '2026-11-29T18:00:00+08:00'；較早者優先
