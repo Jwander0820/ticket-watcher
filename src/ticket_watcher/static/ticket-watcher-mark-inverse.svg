@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none" role="img" aria-labelledby="tw-title">
+  <title id="tw-title">Ticket Watcher</title>
+  <g fill="none" stroke="#FFFFFF" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M15 17H49Q54 17 54 22V27C47.5 27 47.5 37 54 37V42Q54 47 49 47H15Q10 47 10 42V37C16.5 37 16.5 27 10 27V22Q10 17 15 17Z" stroke-width="3.2"/>
+    <path d="M19 32C23.8 24.4 32.2 24.4 37 32C32.2 39.6 23.8 39.6 19 32Z" stroke-width="2.7"/>
+    <path d="M43 23V26M43 30.5V33.5M43 38V41" stroke-width="2.5"/>
+  </g>
+  <circle cx="28" cy="32" r="3.25" fill="#78D1B3"/>
+</svg>

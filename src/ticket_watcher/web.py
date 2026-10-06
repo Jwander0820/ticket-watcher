@@ -478,11 +478,20 @@ def create_app(path: Path, *, watcher_factory=Watcher, monitor=True):
 
     async def asset(request):
         name = request.match_info.get("file", "index.html")
-        if name not in {"index.html", "app.css", "app.js"}:
+        if name not in {
+            "index.html",
+            "app.css",
+            "app.js",
+            "ticket-watcher-mark-inverse.svg",
+            "favicon.svg",
+            "favicon.ico",
+            "apple-touch-icon.png",
+        }:
             raise web.HTTPNotFound()
         return web.FileResponse(STATIC / name)
 
     app.router.add_get("/", asset)
+    app.router.add_get("/{file:favicon\\.ico}", asset)
     app.router.add_get("/static/{file}", asset)
     app.router.add_get("/api/state", state)
     app.router.add_post("/api/actions/{action}", action)

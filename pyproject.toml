@@ -20,7 +20,7 @@ ticket-watcher = "ticket_watcher.cli:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-ticket_watcher = ["static/*.html", "static/*.css", "static/*.js"]
+ticket_watcher = ["static/*.html", "static/*.css", "static/*.js", "static/*.svg", "static/*.ico", "static/*.png"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
