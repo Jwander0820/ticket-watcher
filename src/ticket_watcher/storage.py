@@ -189,7 +189,9 @@ class Store:
         payload: dict,
         ttl: float,
         enabled: bool,
+        channel_id: str = "default",
     ):
+        payload = {**payload, "channel_id": channel_id}
         if target_id:
             target = db.execute("SELECT signature FROM targets WHERE id=?", (target_id,)).fetchone()
             if target:
@@ -225,7 +227,13 @@ class Store:
                 )
 
     def claim_notice(
-        self, now: float, max_attempts: int = 6, lease_seconds: float = 120
+        self,
+        now: float,
+        max_attempts: int = 6,
+        lease_seconds: float = 120,
+        *,
+        channels: set[str] | None = None,
+        event_id: str | None = None,
     ) -> dict | None:
         with self.transaction() as db:
             db.execute(
@@ -245,11 +253,27 @@ class Store:
             platform = db.execute("SELECT * FROM platform WHERE id='discord'").fetchone()
             if platform["blocked_until"] > now or platform["lease_until"] > now:
                 return None
+            filters, params = [], [now]
+            if channels is not None:
+                if not channels:
+                    return None
+                filters.append(
+                    "coalesce(json_extract(e.payload,'$.channel_id'),'default') IN ("
+                    + ",".join("?" for _ in channels)
+                    + ")"
+                )
+                params.extend(sorted(channels))
+            if event_id is not None:
+                filters.append("o.event_id=?")
+                params.append(event_id)
+            extra = " AND " + " AND ".join(filters) if filters else ""
             row = db.execute(
                 """SELECT o.*,e.target_id,e.kind,e.payload,e.created_at
              FROM outbox o JOIN events e ON e.id=o.event_id
-             WHERE o.status='PENDING' AND o.next_attempt<=? ORDER BY o.next_attempt,e.created_at LIMIT 1""",
-                (now,),
+             WHERE o.status='PENDING' AND o.next_attempt<=?"""
+                + extra
+                + " ORDER BY o.next_attempt,e.created_at LIMIT 1",
+                params,
             ).fetchone()
             if not row:
                 return None

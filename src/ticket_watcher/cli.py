@@ -25,11 +25,15 @@ def parser() -> argparse.ArgumentParser:
         "run",
         "health",
         "resume",
+        "ui",
     ):
         p = sub.add_parser(command)
         # Also allow options after the operation, for AI/tool callers.
         p.add_argument("--config", type=Path, default=argparse.SUPPRESS)
         p.add_argument("--json", action="store_true", help="輸出 JSON（預設已為 JSON）")
+        if command == "ui":
+            p.add_argument("--host", default="127.0.0.1")
+            p.add_argument("--port", type=int, default=8787)
         if command == "query":
             p.add_argument("--url", required=True)
             p.add_argument("--session-id", action="append", default=[])
@@ -51,6 +55,11 @@ async def execute(args) -> Result:
     if args.operation == "capabilities":
         return capabilities()
     config_path = args.config
+    if args.operation == "ui":
+        from .web import serve
+
+        await serve(config_path or Path("data/ui-config.yaml"), args.host, args.port)
+        return Result()
     if config_path is None and Path("config.yaml").is_file():
         config_path = Path("config.yaml")
     if config_path is None and args.operation in {"check", "tick", "run", "resume"}:

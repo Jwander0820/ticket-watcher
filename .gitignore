@@ -6,7 +6,10 @@ __pycache__/
 .ruff_cache/
 .env
 config.yaml
+**/discord-webhooks.json
 data/
 dist/
 build/
+output/playwright/
+.playwright-cli/
 *.tmp.*

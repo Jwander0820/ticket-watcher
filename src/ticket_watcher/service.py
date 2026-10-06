@@ -35,6 +35,7 @@ def capabilities() -> Result:
                 "run",
                 "health",
                 "resume",
+                "ui",
             ],
             "platforms": [
                 {
@@ -158,6 +159,7 @@ class Watcher:
             {"message": message},
             self.config.notification_ttl,
             self.config.system_alerts,
+            channel_id=self._target(target_id).channel_id if target_id else "default",
         )
 
     def _error(self, error: SourceError, target: Target | None = None) -> Result:
@@ -167,7 +169,9 @@ class Watcher:
             if error.code == "BLOCKED" and not platform["paused_reason"]:
                 db.execute("UPDATE platform SET paused_reason='BLOCKED' WHERE id='ticketplus'")
                 if target:
-                    self._system(db, "TicketPlus 拒絕存取或要求驗證，平台查詢已暫停，需人工處理。")
+                    self._system(
+                        db, "TicketPlus 拒絕存取或要求驗證，平台查詢已暫停，需人工處理。", target.id
+                    )
             if error.code == "RATE_LIMITED" or (target is None and error.code == "NETWORK"):
                 failures = platform["failures"] + 1
                 local_delay = self.config.backoff[min(failures - 1, len(self.config.backoff) - 1)]
@@ -443,6 +447,7 @@ class Watcher:
                     },
                     self.config.notification_ttl,
                     True,
+                    channel_id=target.channel_id,
                 )
             hint_event_id = None
             if hints:
@@ -462,6 +467,7 @@ class Watcher:
                     },
                     self.config.notification_ttl,
                     True,
+                    channel_id=target.channel_id,
                 )
         return changes, event_id, hint_event_id
 

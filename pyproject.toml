@@ -8,7 +8,7 @@ version = "0.1.1"
 description = "Reusable TicketPlus availability queries and release monitoring"
 readme = "README.md"
 requires-python = ">=3.12"
-dependencies = ["httpx>=0.28,<0.29", "PyYAML>=6.0,<7", "cryptography>=44,<49", "tzdata>=2025.1; sys_platform == 'win32'"]
+dependencies = ["httpx>=0.28,<0.29", "PyYAML>=6.0,<7", "cryptography>=44,<49", "aiohttp>=3.12,<4", "tzdata>=2025.1; sys_platform == 'win32'"]
 
 [project.optional-dependencies]
 dev = ["pytest>=8,<10", "ruff>=0.14,<0.17", "build>=1,<2"]
@@ -18,6 +18,9 @@ ticket-watcher = "ticket_watcher.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+ticket_watcher = ["static/*.html", "static/*.css", "static/*.js"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

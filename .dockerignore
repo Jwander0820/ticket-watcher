@@ -5,6 +5,9 @@ config.yaml
 data
 dist
 build
+output
+.playwright-cli
+**/discord-webhooks.json
 .pytest-tmp*
 .pytest_cache
 .ruff_cache

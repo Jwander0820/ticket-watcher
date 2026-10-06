@@ -23,12 +23,14 @@ notifications:
 
 # activity 網址監控外頁場次；order 網址監控內頁票區／票種。
 # 填入真實網址後改 enabled: true。範例預設不啟動監控。
+channels: []  # 可透過本機 UI 新增；Webhook 存於資料庫旁的私有 JSON，不填在這裡。
 targets:
   - id: my-event
     name: 我的監控活動
     platform: ticketplus
     url: https://ticketplus.com.tw/activity/e000000001
     enabled: false
+    channel_id: default  # 沿用 DISCORD_WEBHOOK_URL；UI 新增的頻道可個別指定
     source: auto
     session_ids: []
     item_ids: []  # order 網址可篩選 a000... 票區或 p000... 票種；activity 不接受

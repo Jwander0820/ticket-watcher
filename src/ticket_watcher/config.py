@@ -43,11 +43,18 @@ class Target:
     item_ids: tuple[str, ...] = ()
     stop_at: float | None = None
     platform: str = "ticketplus"
+    channel_id: str = "default"
 
     @property
     def signature(self) -> str:
         raw = json.dumps([self.url, self.source, sorted(self.session_ids), sorted(self.item_ids)])
         return hashlib.sha256(raw.encode()).hexdigest()
+
+
+@dataclass(frozen=True)
+class Channel:
+    id: str
+    name: str
 
 
 @dataclass(frozen=True)
@@ -67,6 +74,11 @@ class Config:
     retry_delays: tuple[int, ...] = (10, 30, 60, 120, 300)
     retention_days: int = 30
     targets: tuple[Target, ...] = field(default_factory=tuple)
+    channels: tuple[Channel, ...] = field(default_factory=tuple)
+
+    @property
+    def secrets_path(self) -> Path:
+        return self.database_path.with_name("discord-webhooks.json")
 
 
 def _section(data: dict, key: str, allowed: set[str]) -> dict:
@@ -108,12 +120,17 @@ def load_config(path: str | Path | None = None) -> Config:
         return Config(database_path=Path("data/watcher.db").resolve())
     path = Path(path).resolve()
     data = yaml.safe_load(path.read_text(encoding="utf-8-sig")) or {}
+    return parse_config(data, path.parent)
+
+
+def parse_config(data: dict, directory: Path) -> Config:
     if not isinstance(data, dict) or set(data) - {
         "app",
         "polling",
         "http",
         "notifications",
         "targets",
+        "channels",
     }:
         raise ValueError("設定檔結構不正確")
     app = _section(data, "app", {"timezone", "database_path", "log_level", "retention_days"})
@@ -150,6 +167,24 @@ def load_config(path: str | Path | None = None) -> Config:
     if not isinstance(env_name, str) or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", env_name):
         raise ValueError("Webhook 環境變數名稱不正確")
     database = Path(app.get("database_path", "data/watcher.db"))
+    channels = []
+    entries = data.get("channels", [])
+    if not isinstance(entries, list) or len(entries) > 30:
+        raise ValueError("通知頻道必須是陣列，最多 30 個")
+    for entry in entries:
+        if not isinstance(entry, dict) or set(entry) != {"id", "name"}:
+            raise ValueError("通知頻道需提供 id 與 name")
+        ident, name = entry["id"], entry["name"]
+        if (
+            not isinstance(ident, str)
+            or not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", ident)
+            or ident == "default"
+            or ident in {c.id for c in channels}
+        ):
+            raise ValueError("通知頻道 ID 不正確或重複")
+        if not isinstance(name, str) or not 1 <= len(name.strip()) <= 80:
+            raise ValueError("通知頻道名稱需為 1 至 80 個字")
+        channels.append(Channel(ident, name.strip()))
     targets = []
     entries = data.get("targets", [])
     if not isinstance(entries, list):
@@ -165,6 +200,7 @@ def load_config(path: str | Path | None = None) -> Config:
             "session_ids",
             "item_ids",
             "stop_at",
+            "channel_id",
         }:
             raise ValueError("監控目標欄位不正確")
         ident = entry.get("id", "")
@@ -188,19 +224,26 @@ def load_config(path: str | Path | None = None) -> Config:
             if stop.tzinfo is None:
                 raise ValueError("stop_at 必須包含時區")
             stop = stop.timestamp()
+        channel = entry.get("channel_id", "default")
+        if channel not in {"default", *(c.id for c in channels)}:
+            raise ValueError("監控指定的 Discord 頻道不存在")
+        url = validate_url(entry["url"])
+        if filters[1] and "/activity/" in url:
+            raise ValueError("票區或票種篩選需使用 order 場次網址")
         targets.append(
             Target(
                 ident,
                 str(entry.get("name", ident)),
-                validate_url(entry["url"]),
+                url,
                 _bool(entry.get("enabled", True)),
                 entry.get("source", "auto"),
                 *filters,
                 stop,
+                channel_id=channel,
             )
         )
     return Config(
-        database_path=(path.parent / database).resolve(),
+        database_path=(directory / database).resolve(),
         timezone=zone,
         normal_interval=_interval(polling.get("normal_interval_seconds", [300, 900]), 300),
         active_interval=_interval(polling.get("active_interval_seconds", [60, 180]), 60),
@@ -215,4 +258,5 @@ def load_config(path: str | Path | None = None) -> Config:
         retry_delays=_sequence(notice.get("retry_delays_seconds", [10, 30, 60, 120, 300])),
         retention_days=_int(app.get("retention_days", 30)),
         targets=tuple(targets),
+        channels=tuple(channels),
     )

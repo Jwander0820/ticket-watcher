@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Ticket Watcher · 監控控制台</title>
+  <link rel="stylesheet" href="/static/app.css">
+  <script src="/static/app.js" defer></script>
+</head>
+<body>
+  <a class="skip" href="#main">跳到主要內容</a>
+  <aside class="sidebar">
+    <a class="brand" href="/" aria-label="Ticket Watcher 首頁"><span class="brand-mark" aria-hidden="true">TW</span><span>Ticket<span class="brand-line">Watcher</span></span></a>
+    <p class="side-label">你的票況工作台</p>
+    <nav aria-label="主要導覽">
+      <button type="button" data-view="targets" aria-current="page"><span aria-hidden="true">▤</span>監控場次</button>
+      <button type="button" data-view="channels"><span aria-hidden="true">#</span>Discord 頻道</button>
+      <button type="button" data-view="settings"><span aria-hidden="true">☷</span>輪詢設定</button>
+      <button type="button" data-view="events"><span aria-hidden="true">↗</span>事件紀錄</button>
+    </nav>
+    <div class="side-foot"><span class="local-dot"></span> 本機控制台<p>查票與通知，不自動購票。</p></div>
+  </aside>
+  <main id="main">
+    <header class="topbar"><span class="eyebrow">TICKETPLUS / MONITOR</span><span id="service-state" class="service-state">連線中…</span></header>
+    <div id="global-error" class="banner error" role="alert" hidden></div>
+    <div id="platform-warning" class="banner" hidden></div>
+    <section id="targets-view" class="view" aria-labelledby="targets-heading">
+      <div class="page-heading"><div><h1 id="targets-heading">監控場次</h1><p>把想看的演出放在這裡，票況有變化時收到通知。</p></div><button class="primary" data-action="add-target">＋ 新增監控</button></div>
+      <div class="overview" id="overview"></div>
+      <div class="section-bar"><h2>我的監控</h2><button class="quiet" data-action="refresh">↻ 更新狀態</button></div>
+      <div id="target-list" class="target-list"><p class="muted">正在讀取監控…</p></div>
+      <p class="footnote">初次觀測只建立基準；由無票轉有票時才通知。「暫無票券」會另外標示為釋票線索。</p>
+    </section>
+    <section id="channels-view" class="view" aria-labelledby="channels-heading" hidden>
+      <div class="page-heading"><div><h1 id="channels-heading">Discord 頻道</h1><p>為不同演出選擇通知的地方。</p></div><button class="primary" data-action="add-channel">＋ 新增頻道</button></div>
+      <div class="help-panel"><span class="help-mark" aria-hidden="true">#</span><div><h2>如何連接指定頻道？</h2><p>在 Discord「伺服器設定 → 整合 → Webhook」建立 Webhook，選擇要接收通知的文字頻道，再複製網址貼到這裡。你需要該伺服器的管理 Webhook 權限。</p><a href="https://support.discord.com/hc/en-us/articles/228383668-Intro-to-Webhooks" target="_blank" rel="noreferrer">查看 Discord 官方說明 ↗</a></div></div>
+      <div id="channel-list" class="channel-list"></div>
+      <p class="footnote">每個監控可以選一個頻道。儲存後不會顯示完整網址；按「傳送測試」才會發送測試訊息。</p>
+    </section>
+    <section id="settings-view" class="view" aria-labelledby="settings-heading" hidden>
+      <div class="page-heading"><div><h1 id="settings-heading">輪詢設定</h1><p>控制查票節奏與通知保留時間，儲存後套用。</p></div></div>
+      <form id="settings-form" method="post" action="/api/settings" class="settings-panel">
+        <fieldset><legend>查票節奏</legend><p class="muted">每次在設定的上下限之間隨機等待；下一次查詢仍會遵守原有等待期限。</p>
+          <div class="form-grid"><div><label for="normal-min">一般間隔下限（秒）</label><input id="normal-min" name="normal_min" type="number" min="300" required></div><div><label for="normal-max">一般間隔上限（秒）</label><input id="normal-max" name="normal_max" type="number" min="300" required></div>
+          <div><label for="active-min">快速間隔下限（秒）</label><input id="active-min" name="active_min" type="number" min="60" required></div><div><label for="active-max">快速間隔上限（秒）</label><input id="active-max" name="active_max" type="number" min="60" required></div>
+          <div><label for="active-window">快速模式持續時間（秒）</label><input id="active-window" name="active_window" type="number" min="1" required></div><div><label for="exit-checks">連續幾次確認無票後退出快速模式</label><input id="exit-checks" name="exit_checks" type="number" min="1" required></div></div>
+        </fieldset>
+        <fieldset><legend>連線與通知</legend><div class="form-grid"><div><label for="request-gap">每個請求至少間隔（秒）</label><input id="request-gap" name="request_gap" type="number" min="5" required></div><div><label for="timeout">連線逾時（秒）</label><input id="timeout" name="timeout" type="number" min="1" required></div><div><label for="notification-ttl">未送出通知保留時間（秒）</label><input id="notification-ttl" name="notification_ttl" type="number" min="1" required></div></div><label class="checkbox"><input id="system-alerts" name="system_alerts" type="checkbox">通知查詢異常與恢復狀態</label></fieldset>
+        <p class="form-error" role="alert" tabindex="-1" hidden></p><div class="form-footer"><span class="muted">套用時保留票況紀錄與平台限流。</span><button type="submit" class="primary">儲存設定</button></div>
+      </form>
+    </section>
+    <section id="events-view" class="view" aria-labelledby="events-heading" hidden>
+      <div class="page-heading"><div><h1 id="events-heading">事件紀錄</h1><p>最近的票況變化與 Discord 通知結果。</p></div><button class="quiet" data-action="refresh">↻ 更新紀錄</button></div>
+      <div id="event-list" class="event-list"></div><p class="footnote">顯示最近 20 筆事件。「待送」不代表已送達，已送達會保留訊息 ID。</p>
+    </section>
+    <p id="last-refresh" class="last-refresh"></p>
+  </main>
+  <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+  <dialog id="target-dialog" aria-labelledby="target-title">
+    <form id="target-form" method="post" action="/api/targets">
+      <div class="dialog-heading"><div><p class="eyebrow">WATCH LIST</p><h2 id="target-title">新增監控</h2></div><button type="button" class="icon-button" data-close="target-dialog" aria-label="關閉">×</button></div>
+      <label for="target-name">監控名稱 <span class="required">必填</span></label><input id="target-name" name="name" maxlength="120" required placeholder="例如：優里 台北場 10/9" autocomplete="off">
+      <label for="target-url">TicketPlus 活動或場次網址 <span class="required">必填</span></label><input id="target-url" name="url" type="url" required placeholder="https://ticketplus.com.tw/order/…/…" aria-describedby="url-help" autocomplete="off"><p id="url-help" class="hint">貼活動頁可監控場次；貼 order 購票頁可監控票區或票種。</p>
+      <label for="target-channel">通知到哪個頻道</label><select id="target-channel" name="channel_id" aria-describedby="channel-help"></select><p id="channel-help" class="hint">可先儲存監控，再到「Discord 頻道」新增目的地。</p>
+      <details><summary>更多篩選與停止時間</summary><label for="session-ids">指定場次 ID（選填）</label><input id="session-ids" name="session_ids" placeholder="s000001778，多個以逗號分隔" autocomplete="off"><label for="item-ids">指定票區／票種 ID（選填）</label><input id="item-ids" name="item_ids" placeholder="a000… 或 p000…，僅適用 order 網址" autocomplete="off"><label for="stop-at">停止監控時間（本機時區，選填）</label><input id="stop-at" name="stop_at" type="datetime-local"><p class="hint">留白表示不限。未指定 ID 時，監控該網址的全部公開項目。</p></details>
+      <label class="checkbox"><input id="target-enabled" name="enabled" type="checkbox">儲存後啟用監控</label>
+      <p class="form-error" role="alert" tabindex="-1" hidden></p><div class="dialog-actions"><button type="button" class="secondary" data-close="target-dialog">取消</button><button type="submit" class="primary">儲存監控</button></div>
+    </form>
+  </dialog>
+  <dialog id="channel-dialog" aria-labelledby="channel-title">
+    <form id="channel-form" method="post" action="/api/channels">
+      <div class="dialog-heading"><div><p class="eyebrow">DISCORD</p><h2 id="channel-title">新增頻道</h2></div><button type="button" class="icon-button" data-close="channel-dialog" aria-label="關閉">×</button></div>
+      <label for="channel-name">頻道名稱 <span class="required">必填</span></label><input id="channel-name" name="name" required maxlength="80" placeholder="例如：演唱會通知" autocomplete="off">
+      <label for="webhook-url">Discord Webhook 網址</label><div class="secret-input"><input id="webhook-url" name="webhook_url" type="password" autocomplete="new-password" placeholder="https://discord.com/api/webhooks/…" aria-describedby="webhook-help"><button type="button" class="quiet" id="reveal-webhook" aria-pressed="false">顯示</button></div><p id="webhook-help" class="hint">網址本身已指定 Discord 頻道，不需要填頻道 ID。修改時留白會保留原網址。</p>
+      <p class="form-error" role="alert" tabindex="-1" hidden></p><div class="dialog-actions"><button type="button" class="secondary" data-close="channel-dialog">取消</button><button type="submit" class="primary">儲存頻道</button></div>
+    </form>
+  </dialog>
+  <dialog id="confirm-dialog" aria-labelledby="confirm-title"><h2 id="confirm-title">確認操作</h2><p id="confirm-text"></p><div class="dialog-actions"><button class="secondary" data-close="confirm-dialog">取消</button><button id="confirm-accept" class="primary">確認</button></div></dialog>
+  <noscript><p class="banner error">這個管理介面需要 JavaScript。也可使用 ticket-watcher CLI 管理監控。</p></noscript>
+</body>
+</html>

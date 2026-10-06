@@ -1,0 +1,31 @@
+services:
+  ticket-watcher-ui:
+    build: .
+    image: ticket-watcher:ui
+    command: ["--config", "/app/data/ui-config.yaml", "ui", "--host", "0.0.0.0", "--port", "8787"]
+    restart: unless-stopped
+    init: true
+    environment:
+      DISCORD_WEBHOOK_URL: ${DISCORD_WEBHOOK_URL:-}
+    ports:
+      - "127.0.0.1:8787:8787"
+    volumes:
+      - watcher-ui-data:/app/data
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    healthcheck:
+      test: ["CMD", "ticket-watcher", "--config", "/app/data/ui-config.yaml", "health", "--json"]
+      interval: 30s
+      timeout: 10s
+      start_period: 30s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: 5m
+        max-file: '3'
+volumes:
+  watcher-ui-data:

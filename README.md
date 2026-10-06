@@ -22,6 +22,38 @@ Linux 可使用 `.venv/bin/python` 與 `.venv/bin/ticket-watcher`。也可安裝
 
 ## 設定監控
 
+### 本機 UI
+
+使用 Docker 啟動控制台：
+
+```powershell
+docker compose -f compose.ui.yaml up -d --build
+```
+
+開啟 [http://localhost:8787](http://localhost:8787)，即可新增／編輯監控、啟用／停用目標、選擇每場的 Discord 頻道、調整輪詢間隔並查看最近事件。新監控預設停用，勾選「儲存後啟用監控」才開始查票。介面提供場次／票區篩選與停止時間；查詢一次仍遵守排程與平台限流。
+
+Discord 設定步驟：
+
+1. 在 Discord「伺服器設定 → 整合 → Webhook」建立 Webhook，選擇接收通知的文字頻道，再複製網址。需有管理 Webhook 權限，詳見 [Discord 官方說明](https://support.discord.com/hc/en-us/articles/228383668-Intro-to-Webhooks)。
+2. 到控制台「Discord 頻道 → 新增頻道」，填入自訂名稱與 Webhook 網址。每個目的頻道分別新增。
+3. 編輯監控，在「通知到哪個頻道」選擇目的地。可按頻道的「傳送測試」確認送達；儲存頻道本身不傳送訊息。
+
+UI 儲存會自動重新載入監控設定，保留既有票況、排程與平台等待期限。修改網址或篩選會建立新基準；單純更換通知頻道保留票況基準，尚未送出的舊頻道通知會取消。輪詢最低值維持一般 300 秒、快速 60 秒、每個 HTTP 請求間隔 5 秒。
+
+此 Compose 僅發布本機 `127.0.0.1:8787`，以獨立 `watcher-ui-data` volume 保存設定、SQLite 與私有 Webhook 檔案。`discord-webhooks.json` 位於資料庫旁，是本機明文憑證檔，已排除 Git 與 Docker 建置內容；頁面不回傳儲存的完整網址。備份 volume 時需一併保護這個檔案。預設頻道仍可沿用 `.env` 的 `DISCORD_WEBHOOK_URL`。
+
+不使用 Docker 時，安裝後執行：
+
+```powershell
+.\.venv\Scripts\ticket-watcher.exe ui
+# 或使用既有設定檔（UI 儲存時會重寫 YAML，註解不保留）：
+.\.venv\Scripts\ticket-watcher.exe --config config.yaml ui
+```
+
+預設建立 `data/ui-config.yaml` 與同目錄資料庫。UI 程序已包含常駐監控，不需另外執行 `run`，也不要讓 UI 與其他 `run` 程序同時管理同一份設定／資料庫。手動在外部修改設定檔後需重啟 UI。停止 Docker UI 可執行 `docker compose -f compose.ui.yaml down`，資料 volume 會保留。
+
+### CLI 設定
+
 複製 `config.example.yaml` 為 `config.yaml`，填入 URL，將目標改成 `enabled: true`。`activity` URL 監控場次外頁；`order` URL 自動使用該場的票區或票種來源。`session_ids` 可填 API 的 `s000001778` 或公開場次 ID；空陣列代表所有公開場次，購票 URL 已限定一場。
 
 `order` URL 可透過 `item_ids` 篩選 `a000...` 票區或 `p000...` 票種；空陣列代表該場全部公開項目。`activity` URL 不接受 `item_ids`，避免暗中忽略票區篩選。只有外頁網址時，先用 `query --detail full` 取得每場的 `order_url`。公開 API 可以取得售完場次的內頁資料，無須先點入網站或登入。
@@ -50,7 +82,7 @@ ticket-watcher --config config.yaml resume --platform ticketplus --json
 ticket-watcher --config config.yaml resume --target my-event --json
 ```
 
-`resume` 不清除伺服器等待期限與原有排程。修改來源、URL 或篩選會建立新基準，不跨基準判定釋票。設定變更重啟生效。
+`resume` 不清除伺服器等待期限與原有排程。修改來源、URL 或篩選會建立新基準，不跨基準判定釋票。CLI 常駐程序的設定變更需重啟生效；UI 儲存會自動套用。
 
 `run` 的查票、通知重試與 heartbeat 分開執行，Discord 等待不會阻塞下一輪查票。`tick` 同樣讓通知與本輪查票並行，結束前等待通知批次完成；`check` 保留單次查票後立即嘗試通知的行為。完整成功的 `query` 會重設平台失敗累計，但不清除伺服器等待期限。
 

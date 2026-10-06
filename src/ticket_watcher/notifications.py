@@ -11,6 +11,7 @@ import httpx
 
 from .config import Config
 from .models import utcnow
+from .private_io import read_webhooks
 from .storage import Store
 from .transport import retry_after
 
@@ -19,6 +20,10 @@ def webhook_url(env_name: str) -> str | None:
     value = os.environ.get(env_name)
     if not value:
         return None
+    return validate_webhook(value)
+
+
+def validate_webhook(value: str) -> str:
     try:
         parts = urlsplit(value)
         valid = (
@@ -31,11 +36,23 @@ def webhook_url(env_name: str) -> str | None:
             and not parts.fragment
             and re.fullmatch(r"/api(?:/v[0-9]+)?/webhooks/[0-9]+/[A-Za-z0-9_.-]+", parts.path)
         )
-    except ValueError:
+    except (ValueError, TypeError, AttributeError):
         valid = False
     if not valid:
         raise ValueError("Discord webhook 環境變數格式不正確（值已隱藏）")
     return value
+
+
+def channel_urls(config: Config) -> dict[str, str]:
+    urls = {}
+    default = webhook_url(config.webhook_url_env)
+    if default:
+        urls["default"] = default
+    stored = read_webhooks(config.secrets_path)
+    for channel in config.channels:
+        if stored.get(channel.id):
+            urls[channel.id] = validate_webhook(stored[channel.id])
+    return urls
 
 
 class DiscordNotifier:
@@ -53,6 +70,7 @@ class DiscordNotifier:
                 or not state
                 or target.signature != state["signature"]
                 or payload.get("target_signature", state["signature"]) != state["signature"]
+                or payload.get("channel_id", "default") != target.channel_id
                 or (target.stop_at is not None and target.stop_at <= self.clock())
             ):
                 return None
@@ -124,9 +142,9 @@ class DiscordNotifier:
             content = "\n".join(lines)
         return {"content": content[:2000], "allowed_mentions": {"parse": []}}
 
-    async def deliver(self, max_messages: int = 10) -> dict:
-        url = webhook_url(self.config.webhook_url_env)
-        if not url:
+    async def deliver(self, max_messages: int = 10, *, event_id: str | None = None) -> dict:
+        urls = channel_urls(self.config)
+        if not urls:
             # Expire old work even when delivery has not been configured.
             self.store.connection.execute(
                 """UPDATE outbox SET status='EXPIRED' WHERE
@@ -140,9 +158,12 @@ class DiscordNotifier:
                 self.clock(),
                 len(self.config.retry_delays) + 1,
                 lease_seconds=max(120, self.config.timeout + 30),
+                channels=set(urls),
+                event_id=event_id,
             )
             if not notice:
                 break
+            url = urls[notice["payload"].get("channel_id", "default")]
             payload = self._format(notice)
             if payload is None:
                 self.store.finish_notice(notice, self.clock(), "CANCELLED")

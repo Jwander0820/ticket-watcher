@@ -1,6 +1,11 @@
 # Tool contract v1.0
 
 Every JSON result includes `schema_version: "1.0"`, `execution_status` and `result_source`.
+This contract describes CLI query/control results; the local UI has a separate internal HTTP API.
+
+`ui` starts a loopback control panel and its own monitoring worker (default port 8787 and `data/ui-config.yaml`). Do not run a second `run` against the same UI-managed database. UI saves reload the worker while preserving schedules, platform cooldowns and unchanged source baselines. Manual file edits require restarting the UI.
+
+Each target has a `channel_id` (default `default`, using `DISCORD_WEBHOOK_URL`). Named channels store only IDs/names in YAML; URLs live in the private `discord-webhooks.json` beside SQLite. A notification records its destination channel when created. Changing a target's channel cancels its old unsent notifications without resetting the observation baseline. Missing channel credentials leave pending work unclaimed until expiry; they do not consume delivery attempts. Only an explicit UI channel-test action queues a test message.
 
 Execution status: COMPLETED (exit 0), FAILED (2), DEFERRED (3), UNSUPPORTED (4). Source: LIVE, CACHE, LOCAL. A completed partial observation still has `complete: false` and UNKNOWN items.
 
