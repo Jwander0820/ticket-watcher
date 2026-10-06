@@ -12,11 +12,15 @@ Change timestamps `previous_observed_at` and `observed_at` are UTC Unix seconds 
 
 `status --target <id> --detail full` reports last valid state/time separately from current observation. `events` returns compact summaries of state changes, errors, system alerts and releases with delivery status; add `--detail full` for original change payloads. `--limit` is 1–500; `--offset` starts at 0; `next_offset` null ends the page. Pagination only reduces presentation after full parsing/evaluation.
 
-`tick` completes one local scheduling round. Inspect each result in `checks` and `delivery`; the outer COMPLETED does not imply every source succeeded. `run` repeats tick in the foreground. `health` reads local heartbeat only and exits 1 if absent/stale.
+`tick` completes one local scheduling round, running delivery alongside the checks and waiting for the final delivery pass before returning. Inspect each result in `checks` and `delivery`; the outer COMPLETED does not imply every source succeeded. `run` keeps polling and delivery in separate foreground tasks, so slow notifications do not delay subsequent polling rounds. Both operations update heartbeat independently every 30 seconds. `health` reads local heartbeat only and exits 1 if absent/stale.
 
 Errors: NETWORK, RATE_LIMITED, BLOCKED, PARSE, UNSUPPORTED. Requests share a minimum 5-second gap and persistent leases. 429 waits use the later of Retry-After and local backoff. Repeated schema problems pause the target; access refusal pauses the platform. Resume is a manual action and preserves cooldowns.
 
+A complete successful query resets the shared platform failure count without clearing cooldowns or writing monitoring baselines. Cached status summaries cover all items, while detail pages are read with SQL pagination. Historical retention cleanup runs at most once per hour across callers sharing the database; delivery expiry checks remain independent of this cleanup interval.
+
 Outbox: PENDING, INFLIGHT, SENT, CANCELLED, EXPIRED, FAILED, DISABLED. Stable event IDs allow identifying possible delivery duplicates after lost acknowledgements. Without a configured webhook, work remains PENDING until its 10-minute TTL expires.
+
+New target notification payloads include `target_signature`, binding them to the configuration that created them. Each delivery claim has a distinct owner; late responses cannot revive cancelled work or overwrite a newer claim. Already-issued HTTP requests cannot be recalled. Existing pending events without a signature remain readable and use the existing cancellation and current-target checks.
 
 Activity URLs use SESSION and return order_url in full item detail. Order URLs use AREA if the session has ticket areas, otherwise PRODUCT. They accept matching item_ids; activity URLs reject item filters. Items add source_status, availability_text, remaining_count, session_name and order_url. remaining_count is a displayed 0-20 quantity; hot-sale values, including counts above 20, are null. Ticket names retain eligibility distinctions such as disability tickets. Individual seats and purchase success are not queried.
 

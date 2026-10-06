@@ -4,6 +4,7 @@ import logging
 import random
 import uuid
 from collections import Counter
+from contextlib import asynccontextmanager
 
 import httpx
 
@@ -16,6 +17,8 @@ from .storage import Store
 from .transport import PublicTransport
 
 log = logging.getLogger(__name__)
+LOCAL_POLL_SECONDS = 5
+HEARTBEAT_INTERVAL_SECONDS = 30
 
 
 def capabilities() -> Result:
@@ -132,7 +135,13 @@ class Watcher:
             )
         self.transport.owner, self.transport.count = owner, 0
         try:
-            return await self.adapter.fetch(target)
+            observation = await self.adapter.fetch(target)
+            if observation.complete:
+                # Query shares platform backoff but must not change ticket baselines.
+                self.store.connection.execute(
+                    "UPDATE platform SET failures=0 WHERE id='ticketplus'"
+                )
+            return observation
         except SourceError as error:
             return self._error(error)
         finally:
@@ -457,6 +466,20 @@ class Watcher:
         return changes, event_id, hint_event_id
 
     async def check(self, ident: str, *, detail=False, limit=50, offset=0) -> Result:
+        result = await self._check(ident, detail=detail, limit=limit, offset=offset)
+        if result.execution_status != "DEFERRED":
+            await self.notifier.deliver()
+        return self._notification_result(result)
+
+    def _notification_result(self, result: Result) -> Result:
+        if result.execution_status == "COMPLETED":
+            result.data["notification"] = self.store.notification_status(result.data["event_id"])
+            result.data["hint_notification"] = self.store.notification_status(
+                result.data["hint_event_id"]
+            )
+        return result
+
+    async def _check(self, ident: str, *, detail=False, limit=50, offset=0) -> Result:
         target = self._target(ident)
         if not target.enabled or (target.stop_at is not None and target.stop_at <= self.clock()):
             return self._deferred("TARGET_DISABLED_OR_STOPPED")
@@ -513,12 +536,6 @@ class Watcher:
                 )
         finally:
             self.store.release(owner)
-        await self.notifier.deliver()
-        if result.execution_status == "COMPLETED":
-            result.data["notification"] = self.store.notification_status(result.data["event_id"])
-            result.data["hint_notification"] = self.store.notification_status(
-                result.data["hint_event_id"]
-            )
         return result
 
     def status(self, ident=None, *, detail=False, limit=50, offset=0) -> Result:
@@ -531,7 +548,7 @@ class Watcher:
             if not state:
                 targets.append({"target_id": key, "state": "NOT_CHECKED"})
                 continue
-            items = self.store.items(key)
+            summary, current = self.store.item_counts(key)
             result = {
                 "target_id": key,
                 "event_name": state["event_name"],
@@ -545,12 +562,13 @@ class Watcher:
                 else None,
                 "paused_reason": state["paused_reason"],
                 "last_error": state["last_error"],
-                "summary": dict(Counter(x["last_valid"] or "UNKNOWN" for x in items)),
-                "current_observation": dict(Counter(x["observed"] for x in items)),
+                "summary": summary,
+                "current_observation": current,
             }
             if detail:
-                result["page"] = _page(
-                    [
+                total = sum(summary.values())
+                result["page"] = {
+                    "items": [
                         {
                             **json.loads(x["details"]),
                             "status": x["observed"],
@@ -558,11 +576,11 @@ class Watcher:
                             "last_valid_at": timestamp(x["valid_at"]),
                             "observed_at": timestamp(x["observed_at"]),
                         }
-                        for x in items
+                        for x in self.store.item_page(key, limit, offset)
                     ],
-                    limit,
-                    offset,
-                )
+                    "total": total,
+                    "next_offset": offset + limit if offset + limit < total else None,
+                }
             targets.append(result)
         platform = self.store.platform()
         return Result(
@@ -592,8 +610,23 @@ class Watcher:
         return Result(result_source="CACHE", data=page)
 
     async def tick(self) -> Result:
+        wakeup, stop = asyncio.Event(), asyncio.Event()
+        # A one-shot round waits for delivery at the end, never between targets.
+        async with self._heartbeat(), asyncio.TaskGroup() as tasks:
+            delivery = tasks.create_task(self._delivery_loop(wakeup, stop))
+            results = await self._check_due(wakeup)
+            stop.set()
+            wakeup.set()
+        return Result(
+            data={
+                "checks": [self._notification_result(result).to_dict() for result in results],
+                "delivery": delivery.result(),
+                "health": self.health().data,
+            }
+        )
+
+    async def _check_due(self, wakeup: asyncio.Event) -> list[Result]:
         results = []
-        self.store.heartbeat(self.clock())
         enabled_ids = {
             t.id
             for t in self.config.targets
@@ -601,22 +634,16 @@ class Watcher:
         }
         with self.store.transaction() as db:
             for row in db.execute(
-                "SELECT DISTINCT target_id FROM events WHERE target_id IS NOT NULL"
+                """SELECT DISTINCT e.target_id FROM outbox o JOIN events e ON e.id=o.event_id
+                 WHERE o.status IN ('PENDING','INFLIGHT') AND e.target_id IS NOT NULL"""
             ).fetchall():
                 if row[0] not in enabled_ids:
                     db.execute(
-                        "UPDATE outbox SET status='CANCELLED' WHERE status='PENDING' AND event_id IN (SELECT id FROM events WHERE target_id=?)",
+                        "UPDATE outbox SET status='CANCELLED' WHERE status IN ('PENDING','INFLIGHT') AND event_id IN (SELECT id FROM events WHERE target_id=?)",
                         (row[0],),
                     )
         for target in self.config.targets:
-            if not target.enabled or (
-                target.stop_at is not None and target.stop_at <= self.clock()
-            ):
-                self.store.connection.execute(
-                    """UPDATE outbox SET status='CANCELLED' WHERE status='PENDING'
-                 AND event_id IN (SELECT id FROM events WHERE target_id=?)""",
-                    (target.id,),
-                )
+            if target.id not in enabled_ids:
                 continue
             state = self.store.target(target.id)
             if (
@@ -625,12 +652,45 @@ class Watcher:
                 and (state["paused_reason"] or state["next_check"] > self.clock())
             ):
                 continue
-            results.append((await self.check(target.id)).to_dict())
-            self.store.heartbeat(self.clock())
-        delivery = await self.notifier.deliver()
-        self.store.heartbeat(self.clock())
+            results.append(await self._check(target.id))
+            wakeup.set()
+            await asyncio.sleep(0)
         self.store.prune(self.clock(), self.config.retention_days)
-        return Result(data={"checks": results, "delivery": delivery, "health": self.health().data})
+        return results
+
+    async def _delivery_loop(self, wakeup: asyncio.Event, stop: asyncio.Event) -> dict:
+        sent = 0
+        while True:
+            # Capture before delivery: if checks finish during a request, perform
+            # one final pass for events enqueued while that request was in flight.
+            stopping = stop.is_set()
+            wakeup.clear()
+            result = await self.notifier.deliver()
+            sent += result["sent"]
+            if stopping:
+                return {**result, "sent": sent}
+            try:
+                await asyncio.wait_for(wakeup.wait(), timeout=LOCAL_POLL_SECONDS)
+            except TimeoutError:
+                pass
+
+    @asynccontextmanager
+    async def _heartbeat(self):
+        stop = asyncio.Event()
+        self.store.heartbeat(self.clock())
+        async with asyncio.TaskGroup() as tasks:
+            tasks.create_task(self._heartbeat_loop(stop))
+            try:
+                yield
+            finally:
+                stop.set()
+
+    async def _heartbeat_loop(self, stop: asyncio.Event):
+        while not stop.is_set():
+            try:
+                await asyncio.wait_for(stop.wait(), timeout=HEARTBEAT_INTERVAL_SECONDS)
+            except TimeoutError:
+                self.store.heartbeat(self.clock())
 
     def health(self) -> Result:
         row = self.store.connection.execute(
@@ -675,7 +735,12 @@ class Watcher:
         )
 
     async def run(self):
+        wakeup, stop = asyncio.Event(), asyncio.Event()
+        async with self._heartbeat(), asyncio.TaskGroup() as tasks:
+            tasks.create_task(self._delivery_loop(wakeup, stop))
+            tasks.create_task(self._poll_loop(wakeup))
+
+    async def _poll_loop(self, wakeup: asyncio.Event):
         while True:
-            await self.tick()
-            # A bounded local wait also services notification retries and heartbeat.
-            await asyncio.sleep(5)
+            await self._check_due(wakeup)
+            await asyncio.sleep(LOCAL_POLL_SECONDS)

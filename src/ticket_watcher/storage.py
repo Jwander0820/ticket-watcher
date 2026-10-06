@@ -110,6 +110,26 @@ class Store:
             )
         ]
 
+    def item_counts(self, ident: str) -> tuple[dict, dict]:
+        valid, observed = {}, {}
+        for row in self.connection.execute(
+            """SELECT coalesce(last_valid,'UNKNOWN') AS valid, observed, count(*) AS total
+             FROM items WHERE target_id=? GROUP BY valid, observed""",
+            (ident,),
+        ):
+            valid[row["valid"]] = valid.get(row["valid"], 0) + row["total"]
+            observed[row["observed"]] = observed.get(row["observed"], 0) + row["total"]
+        return valid, observed
+
+    def item_page(self, ident: str, limit: int, offset: int) -> list[dict]:
+        return [
+            dict(row)
+            for row in self.connection.execute(
+                "SELECT * FROM items WHERE target_id=? ORDER BY item_key LIMIT ? OFFSET ?",
+                (ident, limit, offset),
+            )
+        ]
+
     def platform(self, ident="ticketplus") -> dict:
         return dict(
             self.connection.execute("SELECT * FROM platform WHERE id=?", (ident,)).fetchone()
@@ -170,6 +190,10 @@ class Store:
         ttl: float,
         enabled: bool,
     ):
+        if target_id:
+            target = db.execute("SELECT signature FROM targets WHERE id=?", (target_id,)).fetchone()
+            if target:
+                payload = {**payload, "target_signature": target["signature"]}
         db.execute(
             "INSERT INTO events VALUES(?,?,?,?,?)",
             (event_id, target_id, kind, now, json.dumps(payload, ensure_ascii=False)),
@@ -184,7 +208,7 @@ class Store:
             return
         rows = db.execute(
             """SELECT o.event_id,o.excluded_items,e.payload FROM outbox o JOIN events e ON e.id=o.event_id
-         WHERE e.target_id=? AND e.kind=? AND o.status='PENDING'""",
+         WHERE e.target_id=? AND e.kind=? AND o.status IN ('PENDING','INFLIGHT')""",
             (target_id, kind),
         ).fetchall()
         for row in rows:
@@ -200,7 +224,9 @@ class Store:
                     "UPDATE outbox SET status='CANCELLED' WHERE event_id=?", (row["event_id"],)
                 )
 
-    def claim_notice(self, now: float, max_attempts: int = 6) -> dict | None:
+    def claim_notice(
+        self, now: float, max_attempts: int = 6, lease_seconds: float = 120
+    ) -> dict | None:
         with self.transaction() as db:
             db.execute(
                 """UPDATE outbox SET status='EXPIRED',lease_until=NULL
@@ -229,16 +255,60 @@ class Store:
                 return None
             db.execute(
                 "UPDATE outbox SET status='INFLIGHT',lease_until=?,attempts=attempts+1 WHERE event_id=?",
-                (now + 120, row["event_id"]),
+                (now + lease_seconds, row["event_id"]),
             )
             notice = dict(row)
+            notice["attempts"] += 1
+            # Attempts only increase; a recovered delivery gets a different owner.
+            notice["claim_token"] = f"{row['event_id']}:{notice['attempts']}"
             db.execute(
                 "UPDATE platform SET lease_owner=?,lease_until=? WHERE id='discord'",
-                (row["event_id"], now + 120),
+                (notice["claim_token"], now + lease_seconds),
             )
-            notice["attempts"] += 1
             notice["payload"] = json.loads(notice["payload"])
             return notice
+
+    def finish_notice(
+        self,
+        notice: dict,
+        now: float,
+        status: str,
+        *,
+        message_id=None,
+        error=None,
+        next_attempt=None,
+        blocked_until=0,
+    ) -> bool:
+        with self.transaction() as db:
+            # A real 429 still applies even if this notice was cancelled in flight.
+            if blocked_until:
+                db.execute(
+                    "UPDATE platform SET blocked_until=max(blocked_until,?) WHERE id='discord'",
+                    (blocked_until,),
+                )
+            updated = db.execute(
+                """UPDATE outbox SET status=?,message_id=?,last_error=?,
+                 next_attempt=coalesce(?,next_attempt),lease_until=NULL
+                 WHERE event_id=? AND status='INFLIGHT' AND attempts=? AND lease_until>?
+                 AND EXISTS (SELECT 1 FROM platform WHERE id='discord'
+                  AND lease_owner=? AND lease_until>?)""",
+                (
+                    status,
+                    message_id,
+                    error,
+                    next_attempt,
+                    notice["event_id"],
+                    notice["attempts"],
+                    now,
+                    notice["claim_token"],
+                    now,
+                ),
+            ).rowcount
+            db.execute(
+                "UPDATE platform SET lease_owner=NULL,lease_until=0 WHERE id='discord' AND lease_owner=?",
+                (notice["claim_token"],),
+            )
+            return bool(updated)
 
     def notification_status(self, event_id: str | None) -> dict:
         if event_id is None:
@@ -270,8 +340,20 @@ class Store:
         self.connection.execute("INSERT OR REPLACE INTO runtime VALUES('heartbeat',?)", (str(now),))
 
     def prune(self, now: float, days: int):
+        def due():
+            row = self.connection.execute(
+                "SELECT value FROM runtime WHERE key='last_prune'"
+            ).fetchone()
+            return row is None or now - float(row[0]) >= 3600
+
+        # Avoid a write transaction on every scheduler wake-up. Recheck under the
+        # lock so multiple processes share the same hourly maintenance interval.
+        if not due():
+            return
         cutoff = now - days * 86400
         with self.transaction() as db:
+            if not due():
+                return
             db.execute(
                 """DELETE FROM outbox WHERE status NOT IN ('PENDING','INFLIGHT') AND event_id IN
              (SELECT id FROM events WHERE created_at<?)""",
@@ -282,3 +364,4 @@ class Store:
                 (cutoff,),
             )
             db.execute("DELETE FROM metadata WHERE expires_at<?", (now,))
+            db.execute("INSERT OR REPLACE INTO runtime VALUES('last_prune',?)", (str(now),))

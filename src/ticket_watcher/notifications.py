@@ -1,3 +1,4 @@
+import asyncio
 import json
 import math
 import os
@@ -51,6 +52,7 @@ class DiscordNotifier:
                 or not target.enabled
                 or not state
                 or target.signature != state["signature"]
+                or payload.get("target_signature", state["signature"]) != state["signature"]
                 or (target.stop_at is not None and target.stop_at <= self.clock())
             ):
                 return None
@@ -134,24 +136,23 @@ class DiscordNotifier:
             return {"sent": 0, "reason": "WEBHOOK_NOT_CONFIGURED"}
         sent = 0
         for _ in range(max_messages):
-            notice = self.store.claim_notice(self.clock(), len(self.config.retry_delays) + 1)
+            notice = self.store.claim_notice(
+                self.clock(),
+                len(self.config.retry_delays) + 1,
+                lease_seconds=max(120, self.config.timeout + 30),
+            )
             if not notice:
                 break
             payload = self._format(notice)
             if payload is None:
-                with self.store.transaction() as db:
-                    db.execute(
-                        "UPDATE outbox SET status='CANCELLED',lease_until=NULL WHERE event_id=?",
-                        (notice["event_id"],),
-                    )
-                    db.execute(
-                        "UPDATE platform SET lease_owner=NULL,lease_until=0 WHERE id='discord' AND lease_owner=?",
-                        (notice["event_id"],),
-                    )
+                self.store.finish_notice(notice, self.clock(), "CANCELLED")
                 continue
             delay, error, message_id, terminal = 0, "DELIVERY_FAILED", None, False
             try:
-                response = await self.client.post(url, params={"wait": "true"}, json=payload)
+                # Bound the whole request, including a response that trickles in,
+                # so an active sender cannot outlive its database lease.
+                async with asyncio.timeout(self.config.timeout):
+                    response = await self.client.post(url, params={"wait": "true"}, json=payload)
                 if response.status_code == 429:
                     error = "RATE_LIMITED"
                     delay = retry_after(response.headers.get("Retry-After"), self.clock())
@@ -172,41 +173,32 @@ class DiscordNotifier:
                         error = "ACKNOWLEDGEMENT_MISSING"
                 elif 400 <= response.status_code < 500:
                     error, terminal = f"HTTP_{response.status_code}", True
-            except httpx.HTTPError:
+            except (httpx.HTTPError, TimeoutError):
                 error = "NETWORK_OR_TIMEOUT"
             now = self.clock()
-            with self.store.transaction() as db:
-                db.execute(
-                    "UPDATE platform SET lease_owner=NULL,lease_until=0 WHERE id='discord' AND lease_owner=?",
-                    (notice["event_id"],),
-                )
-                if message_id:
-                    db.execute(
-                        "UPDATE outbox SET status='SENT',message_id=?,lease_until=NULL,last_error=NULL WHERE event_id=?",
-                        (message_id, notice["event_id"]),
-                    )
+            if message_id:
+                if self.store.finish_notice(notice, now, "SENT", message_id=message_id):
                     sent += 1
-                else:
-                    attempt = notice["attempts"]
-                    exhausted = attempt > len(self.config.retry_delays)
-                    local_delay = self.config.retry_delays[
-                        min(attempt - 1, len(self.config.retry_delays) - 1)
-                    ]
-                    next_attempt = now + max(delay, local_delay)
-                    status = "FAILED" if terminal or exhausted else "PENDING"
-                    if now >= notice["expires_at"] or (
-                        not terminal and not exhausted and next_attempt >= notice["expires_at"]
-                    ):
-                        status = "EXPIRED"
-                    db.execute(
-                        "UPDATE outbox SET status=?,next_attempt=?,lease_until=NULL,last_error=? WHERE event_id=?",
-                        (status, next_attempt, error, notice["event_id"]),
-                    )
-                    if error == "RATE_LIMITED":
-                        db.execute(
-                            "UPDATE platform SET blocked_until=max(blocked_until,?) WHERE id='discord'",
-                            (next_attempt,),
-                        )
+            else:
+                attempt = notice["attempts"]
+                exhausted = attempt > len(self.config.retry_delays)
+                local_delay = self.config.retry_delays[
+                    min(attempt - 1, len(self.config.retry_delays) - 1)
+                ]
+                next_attempt = now + max(delay, local_delay)
+                status = "FAILED" if terminal or exhausted else "PENDING"
+                if now >= notice["expires_at"] or (
+                    not terminal and not exhausted and next_attempt >= notice["expires_at"]
+                ):
+                    status = "EXPIRED"
+                self.store.finish_notice(
+                    notice,
+                    now,
+                    status,
+                    error=error,
+                    next_attempt=next_attempt,
+                    blocked_until=next_attempt if error == "RATE_LIMITED" else 0,
+                )
             if error == "RATE_LIMITED" and not message_id:
                 break
         return {"sent": sent}
