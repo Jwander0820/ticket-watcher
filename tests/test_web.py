@@ -10,6 +10,7 @@ from conftest import URL, Source
 
 from ticket_watcher.config import Channel, load_config
 from ticket_watcher.models import Observation, TicketItem, TicketStatus
+from ticket_watcher.notifications import channel_urls
 from ticket_watcher.private_io import atomic_text, read_webhooks
 from ticket_watcher.service import Watcher
 from ticket_watcher.web import CONTROLLER, create_app
@@ -164,6 +165,141 @@ def test_channels_are_private_and_test_delivery_routes_to_selected_channel(tmp_p
             assert len(requests) == 1 and str(requests[0].url).split("?")[0] == HOOK
             assert HOOK not in json.dumps(c.watcher.events(detail=True).to_dict())
             assert json.loads(requests[0].content)["allowed_mentions"] == {"parse": []}
+
+    asyncio.run(scenario())
+
+
+def test_default_channel_ui_override_clear_and_private_storage(tmp_path, monkeypatch):
+    monkeypatch.setenv("DISCORD_WEBHOOK_URL", HOOK)
+
+    async def scenario():
+        async with panel(tmp_path) as (client, c, requests):
+            state = await snapshot(client)
+            assert state["channels"][0]["source"] == "environment"
+            assert not state["channels"][0]["readonly"]
+            response = await mutate(
+                client,
+                state,
+                "/api/channels/default",
+                {
+                    "name": "預設頻道",
+                    "webhook_url": HOOK_TWO,
+                },
+                "PUT",
+            )
+            assert response.status == 200
+            state = await response.json()
+            assert state["channels"][0]["source"] == "ui"
+            assert channel_urls(c.config)["default"] == HOOK_TWO
+            assert read_webhooks(c.config.secrets_path)["default"] == HOOK_TWO
+            assert not c.config.channels and not requests
+            assert HOOK_TWO not in json.dumps(state)
+            assert HOOK_TWO not in c.path.read_text(encoding="utf-8")
+            state = await (
+                await mutate(
+                    client,
+                    state,
+                    "/api/channels/default",
+                    {
+                        "name": "預設頻道",
+                        "webhook_url": "",
+                    },
+                    "PUT",
+                )
+            ).json()
+            assert channel_urls(c.config)["default"] == HOOK_TWO
+            response = await client.post(
+                "/api/actions/test-channel",
+                headers={"X-CSRF-Token": state["csrf"]},
+                json={"revision": state["revision"], "channel_id": "default"},
+            )
+            assert (await response.json())["notification"]["status"] == "SENT"
+            assert str(requests[0].url).split("?")[0] == HOOK_TWO
+            monkeypatch.setenv("DISCORD_WEBHOOK_URL", "invalid-private-env")
+            assert (
+                await mutate(client, state, "/api/channels/default", method="DELETE")
+            ).status == 400
+            assert channel_urls(c.config)["default"] == HOOK_TWO
+            monkeypatch.setenv("DISCORD_WEBHOOK_URL", HOOK)
+            state = await (
+                await mutate(client, state, "/api/channels/default", method="DELETE")
+            ).json()
+            assert state["channels"][0]["source"] == "environment"
+            assert channel_urls(c.config)["default"] == HOOK
+            monkeypatch.delenv("DISCORD_WEBHOOK_URL")
+            assert not (await snapshot(client))["channels"][0]["configured"]
+
+    asyncio.run(scenario())
+
+
+def test_worker_alert_destination_validation_and_channel_delete_guard(tmp_path):
+    async def scenario():
+        async with panel(tmp_path) as (client, c, requests):
+            state = await snapshot(client)
+            state = await (
+                await mutate(
+                    client,
+                    state,
+                    "/api/channels",
+                    {
+                        "name": "服務告警",
+                        "webhook_url": HOOK,
+                    },
+                )
+            ).json()
+            ident = state["channels"][-1]["id"]
+            state = await (
+                await mutate(
+                    client,
+                    state,
+                    "/api/settings",
+                    {
+                        "notifications": {
+                            "worker_alert_channel_id": ident,
+                            "worker_alerts_enabled": True,
+                        },
+                    },
+                )
+            ).json()
+            assert c.config.worker_alert_channel == ident
+            assert state["settings"]["notifications"]["worker_alerts_enabled"]
+            assert (
+                await mutate(client, state, f"/api/channels/{ident}", method="DELETE")
+            ).status == 409
+            for fields in (
+                {"worker_alert_channel_id": "missing"},
+                {"worker_alerts_enabled": "true"},
+            ):
+                assert (
+                    await mutate(client, state, "/api/settings", {"notifications": fields})
+                ).status == 400
+            c._worker_event("disabled-later", "模擬異常")
+            state = await (
+                await mutate(
+                    client,
+                    state,
+                    "/api/settings",
+                    {
+                        "notifications": {"worker_alerts_enabled": False},
+                    },
+                )
+            ).json()
+            await c.watcher.notifier.deliver()
+            assert c.watcher.store.notification_status("disabled-later")["status"] == "CANCELLED"
+            state = await (
+                await mutate(
+                    client,
+                    state,
+                    "/api/settings",
+                    {
+                        "notifications": {"worker_alert_channel_id": "default"},
+                    },
+                )
+            ).json()
+            assert (
+                await mutate(client, state, f"/api/channels/{ident}", method="DELETE")
+            ).status == 200
+            assert not requests
 
     asyncio.run(scenario())
 

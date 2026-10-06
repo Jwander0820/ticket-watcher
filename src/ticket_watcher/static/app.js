@@ -35,7 +35,11 @@ function renderTargets() {
   }).join("") : `<div class="empty"><div class="empty-ticket" aria-hidden="true"></div><h2>留意下一張好票</h2><p>新增 TicketPlus 活動或場次網址。先設定監控與通知頻道，再開始追蹤票況。</p><button class="primary" data-action="add-target">＋ 新增第一個監控</button></div>`;
 }
 function renderChannels() {
-  $("#channel-list").innerHTML = state.channels.map((c) => `<article class="channel-card"><div><h2># ${esc(c.name)} ${badge(c.configured ? "AVAILABLE" : "UNKNOWN", c.configured ? "已設定" : "未設定")}</h2><p>${c.readonly ? "沿用啟動程序的 DISCORD_WEBHOOK_URL 設定。" : "Webhook 網址已遮蔽；頻道是否可送達，請傳送測試確認。"}</p></div><div class="channel-actions">${!c.readonly ? `<button class="quiet" data-action="edit-channel" data-id="${c.id}">編輯</button>` : ""}<button class="secondary" data-action="test-channel" data-id="${c.id}" ${!c.configured ? "disabled" : ""}>傳送測試</button>${!c.readonly ? `<button class="quiet danger" data-action="delete-channel" data-id="${c.id}">刪除</button>` : ""}</div></article>`).join("");
+  $("#channel-list").innerHTML = state.channels.map((c) => {
+    const isDefault = c.id === "default";
+    const description = isDefault ? c.source === "ui" ? "使用 UI 儲存的 Webhook；清除後改用環境變數（若有設定）。" : "可直接編輯 Webhook。目前沿用環境變數（若有設定）。" : "Webhook 網址已遮蔽；頻道是否可送達，請傳送測試確認。";
+    return `<article class="channel-card"><div><h2># ${esc(c.name)} ${badge(c.configured ? "AVAILABLE" : "UNKNOWN", c.configured ? "已設定" : "未設定")}</h2><p>${description}</p></div><div class="channel-actions"><button class="quiet" data-action="edit-channel" data-id="${c.id}" aria-label="編輯${esc(c.name)}">編輯</button><button class="secondary" data-action="test-channel" data-id="${c.id}" ${!c.configured ? "disabled" : ""}>傳送測試</button>${!isDefault ? `<button class="quiet danger" data-action="delete-channel" data-id="${c.id}">刪除</button>` : c.source === "ui" ? '<button class="quiet" data-action="clear-default" data-id="default">清除 UI 設定</button>' : ""}</div></article>`;
+  }).join("");
 }
 function renderEvents() {
   $("#event-list").innerHTML = state.events.events.length ? state.events.events.map((e) => `<article class="event-row"><time datetime="${esc(e.created_at)}">${dateText(e.created_at)}</time><div><h2>${esc(eventLabels[e.kind] || e.kind)} · ${esc(state.targets.find((t) => t.id === e.target_id)?.name || e.payload.event_name || "系統")}</h2><p>${esc(e.payload.message || e.payload.code || (e.payload.changes_total != null ? `${e.payload.changes_total} 個項目變化` : ""))}</p>${e.message_id ? `<small>訊息 ${esc(e.message_id)}</small>` : ""}</div><div>${e.notification_status ? badge(e.notification_status) : badge("UNKNOWN","僅記錄")}</div></article>`).join("") : `<div class="empty"><h2>還沒有事件</h2><p>啟用監控後，票況變化與通知結果會顯示在這裡。</p></div>`;
@@ -59,10 +63,13 @@ function fillSettings() {
   const values = {normal_min:s.polling.normal_interval_seconds[0], normal_max:s.polling.normal_interval_seconds[1], active_min:s.polling.active_interval_seconds[0], active_max:s.polling.active_interval_seconds[1], active_window:s.polling.active_window_seconds, exit_checks:s.polling.exit_active_after_no_available_checks, request_gap:s.http.min_request_gap_seconds, timeout:s.http.timeout_seconds, notification_ttl:s.notifications.delivery_ttl_seconds};
   Object.entries(values).forEach(([name,value]) => { form.elements[name].value = value; });
   form.elements.system_alerts.checked = s.notifications.system_alerts_enabled;
+  form.elements.worker_alerts.checked = s.notifications.worker_alerts_enabled;
+  form.elements.worker_channel.innerHTML = state.channels.map((c) => `<option value="${c.id}">${esc(c.name)}${c.configured ? "" : "（尚未連接）"}</option>`).join("");
+  form.elements.worker_channel.value = s.notifications.worker_alert_channel_id;
   form.dataset.revision = state.revision;
 }
 function render() {
-  $("#service-state").textContent = state.runner_error ? "監控已停止" : state.runner_active ? "● 監控服務運作中" : "服務待命";
+  $("#service-state").textContent = state.runner_error ? "監控自動恢復中" : state.runner_active ? "● 監控服務運作中" : "服務待命";
   const warning = state.runner_error || (state.external_changes ? "設定檔已在外部變更，請重啟 UI 以載入。" : "");
   $("#global-error").textContent = warning; $("#global-error").hidden = !warning;
   $("#platform-warning").hidden = !state.health.platform_paused;
@@ -106,7 +113,8 @@ function openChannel(id) {
   const form = $("#channel-form"), channel = state.channels.find((c) => c.id === id);
   resetForm(form,id || ""); $("#channel-title").textContent = channel ? "編輯頻道" : "新增頻道";
   if (channel) form.elements.name.value = channel.name;
-  form.elements.webhook_url.required = !channel; form.elements.webhook_url.type = "password";
+  form.elements.name.readOnly = id === "default";
+  form.elements.webhook_url.required = !channel?.configured; form.elements.webhook_url.type = "password";
   $("#reveal-webhook").textContent = "顯示"; $("#reveal-webhook").setAttribute("aria-pressed","false");
   $("#channel-dialog").showModal();
 }
@@ -126,6 +134,10 @@ async function action(button) {
   if (kind === "add-channel" || kind === "edit-channel") return openChannel(id);
   if (kind === "refresh") return refresh();
   const revision = state.revision;
+  if (kind === "clear-default") {
+    if (!await confirmAction("清除 UI 儲存的預設 Webhook？之後會沿用環境變數；若環境變數也未設定，預設頻道將無法送出通知。", "清除設定")) return;
+    state = await api("/api/channels/default", {method:"DELETE",body:{revision}}); render(); toast("已清除 UI 預設頻道設定"); return;
+  }
   if (kind.startsWith("delete-")) {
     const target = kind === "delete-target", item = (target ? state.targets : state.channels).find((x) => x.id === id);
     if (!await confirmAction(`刪除「${item.name}」？${target ? "將停止此目標的監控，既有事件紀錄會保留。" : "使用中的頻道需先從監控移除。"}`, "刪除")) return;
@@ -179,7 +191,7 @@ document.querySelectorAll("form").forEach((form) => form.addEventListener("submi
     } else {
       const n = (name) => Number(f[name].value);
       if (n("normal_max") < n("normal_min") || n("active_max") < n("active_min")) throw new Error("間隔上限不可小於下限。");
-      value = {polling:{normal_interval_seconds:[n("normal_min"),n("normal_max")],active_interval_seconds:[n("active_min"),n("active_max")],active_window_seconds:n("active_window"),exit_active_after_no_available_checks:n("exit_checks")},http:{min_request_gap_seconds:n("request_gap"),timeout_seconds:n("timeout")},notifications:{delivery_ttl_seconds:n("notification_ttl"),system_alerts_enabled:f.system_alerts.checked}};
+      value = {polling:{normal_interval_seconds:[n("normal_min"),n("normal_max")],active_interval_seconds:[n("active_min"),n("active_max")],active_window_seconds:n("active_window"),exit_active_after_no_available_checks:n("exit_checks")},http:{min_request_gap_seconds:n("request_gap"),timeout_seconds:n("timeout")},notifications:{delivery_ttl_seconds:n("notification_ttl"),system_alerts_enabled:f.system_alerts.checked,worker_alerts_enabled:f.worker_alerts.checked,worker_alert_channel_id:f.worker_channel.value}};
       path = "/api/settings"; message = "已儲存並套用設定";
     }
     if (form.dataset.id) path += `/${form.dataset.id}`;

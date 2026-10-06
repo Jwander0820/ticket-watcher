@@ -70,6 +70,8 @@ class Config:
     backoff: tuple[int, ...] = (900, 1800, 3600)
     webhook_url_env: str = "DISCORD_WEBHOOK_URL"
     system_alerts: bool = True
+    worker_alerts: bool = True
+    worker_alert_channel: str = "default"
     notification_ttl: int = 600
     retry_delays: tuple[int, ...] = (10, 30, 60, 120, 300)
     retention_days: int = 30
@@ -155,6 +157,8 @@ def parse_config(data: dict, directory: Path) -> Config:
         {
             "webhook_url_env",
             "system_alerts_enabled",
+            "worker_alerts_enabled",
+            "worker_alert_channel_id",
             "delivery_ttl_seconds",
             "retry_delays_seconds",
         },
@@ -185,6 +189,12 @@ def parse_config(data: dict, directory: Path) -> Config:
         if not isinstance(name, str) or not 1 <= len(name.strip()) <= 80:
             raise ValueError("通知頻道名稱需為 1 至 80 個字")
         channels.append(Channel(ident, name.strip()))
+    worker_channel = notice.get("worker_alert_channel_id", "default")
+    if not isinstance(worker_channel, str) or worker_channel not in {
+        "default",
+        *(c.id for c in channels),
+    }:
+        raise ValueError("服務異常通知指定的 Discord 頻道不存在")
     targets = []
     entries = data.get("targets", [])
     if not isinstance(entries, list):
@@ -254,6 +264,8 @@ def parse_config(data: dict, directory: Path) -> Config:
         backoff=_sequence(http.get("backoff_seconds", [900, 1800, 3600])),
         webhook_url_env=env_name,
         system_alerts=_bool(notice.get("system_alerts_enabled", True)),
+        worker_alerts=_bool(notice.get("worker_alerts_enabled", True)),
+        worker_alert_channel=worker_channel,
         notification_ttl=_int(notice.get("delivery_ttl_seconds", 600)),
         retry_delays=_sequence(notice.get("retry_delays_seconds", [10, 30, 60, 120, 300])),
         retention_days=_int(app.get("retention_days", 30)),

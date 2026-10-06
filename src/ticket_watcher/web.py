@@ -17,12 +17,15 @@ import yaml
 from aiohttp import web
 
 from .config import parse_config
-from .notifications import channel_urls, validate_webhook
+from .notifications import channel_urls, validate_webhook, webhook_url
 from .private_io import atomic_text, read_webhooks
 from .service import Watcher
 
 log = logging.getLogger(__name__)
 STATIC = Path(__file__).with_name("static")
+WORKER_RETRY_SECONDS = (5, 15, 30, 60, 300)
+WORKER_STABLE_SECONDS = 60
+WORKER_FAILURE_MESSAGE = "監控服務意外中止，正在自動重試；重試間隔依序為 5、15、30、60 秒，之後每 5 分鐘一次。穩定恢復後會另行通知。"
 SETTINGS = {
     "polling": {
         "normal_interval_seconds",
@@ -31,7 +34,12 @@ SETTINGS = {
         "exit_active_after_no_available_checks",
     },
     "http": {"min_request_gap_seconds", "timeout_seconds"},
-    "notifications": {"system_alerts_enabled", "delivery_ttl_seconds"},
+    "notifications": {
+        "system_alerts_enabled",
+        "delivery_ttl_seconds",
+        "worker_alerts_enabled",
+        "worker_alert_channel_id",
+    },
 }
 
 
@@ -48,6 +56,8 @@ class Controller:
         self.task = None
         self.watcher = None
         self.runner_error = None
+        self.restart_count = 0
+        self.retry_at = None
 
     async def start(self):
         if not self.path.exists():
@@ -72,11 +82,103 @@ class Controller:
             self.task = asyncio.create_task(self._run())
 
     async def _run(self):
+        failures = 0
+        incident = None
+        while True:
+            try:
+                if failures:
+                    # Serialize replacement with manual queries and settings saves.
+                    # Keep the old instance readable if constructing a replacement fails.
+                    async with self.lock:
+                        replacement = self.factory(self.config)
+                        old, self.watcher = self.watcher, replacement
+                        cleanup = asyncio.create_task(old.__aexit__(None, None, None))
+                        try:
+                            await asyncio.shield(cleanup)
+                        except asyncio.CancelledError:
+                            with suppress(Exception):
+                                await cleanup
+                            raise
+                        except Exception as error:
+                            log.error("ui_worker_cleanup_failed type=%s", type(error).__name__)
+                    self.restart_count += 1
+                    self.retry_at = None
+                    self.runner_error = "監控已重新啟動，正在確認穩定運作。"
+                    self._worker_event(incident + "-failed", WORKER_FAILURE_MESSAGE)
+                worker = asyncio.create_task(self.watcher.run())
+                try:
+                    done, _ = await asyncio.wait({worker}, timeout=WORKER_STABLE_SECONDS)
+                    if not done and incident:
+                        self.runner_error = None
+                        self._worker_event(
+                            incident + "-recovered",
+                            "監控服務已恢復，並持續運作至少 60 秒。原有票況基準、等待期限與平台暫停狀態均保留。",
+                        )
+                        incident, failures = None, 0
+                    await worker
+                    raise RuntimeError("worker_returned")
+                except asyncio.CancelledError:
+                    if asyncio.current_task().cancelling():
+                        raise
+                    raise RuntimeError("worker_cancelled") from None
+                finally:
+                    worker.cancel()
+                    try:
+                        await worker
+                    except asyncio.CancelledError:
+                        if asyncio.current_task().cancelling():
+                            raise
+                    except Exception:
+                        pass
+            except asyncio.CancelledError:
+                raise
+            except Exception as error:
+                delay = WORKER_RETRY_SECONDS[min(failures, len(WORKER_RETRY_SECONDS) - 1)]
+                failures += 1
+                incident = incident or str(uuid.uuid4())
+                self.retry_at = self.watcher.clock() + delay
+                self.runner_error = (
+                    f"監控意外中止，將於 {delay} 秒後自動重試（連續異常 {failures} 次）。"
+                )
+                log.error("ui_worker_failed type=%s retry_seconds=%s", type(error).__name__, delay)
+                try:
+                    self.watcher.store.connection.execute(
+                        "DELETE FROM runtime WHERE key='heartbeat'"
+                    )
+                except Exception:
+                    pass
+                event_id = incident + "-failed"
+                self._worker_event(event_id, WORKER_FAILURE_MESSAGE)
+                # Delivery has its own time budget and must never prevent recovery.
+                # Sleep concurrently so a healthy Discord does not extend backoff.
+                await asyncio.gather(
+                    asyncio.sleep(delay), self._deliver_worker_event(event_id, min(delay, 10))
+                )
+
+    def _worker_event(self, event_id, message):
         try:
-            await self.watcher.run()
+            with self.watcher.store.transaction() as db:
+                if not db.execute("SELECT 1 FROM events WHERE id=?", (event_id,)).fetchone():
+                    self.watcher.store.enqueue(
+                        db,
+                        event_id,
+                        None,
+                        "SYSTEM",
+                        self.watcher.clock(),
+                        {"message": message, "worker_alert": True},
+                        self.config.notification_ttl,
+                        self.config.worker_alerts,
+                        channel_id=self.config.worker_alert_channel,
+                    )
         except Exception as error:
-            self.runner_error = "監控程序已停止，請檢查設定後重新啟動服務。"
-            log.error("ui_worker_failed type=%s", type(error).__name__)
+            log.error("ui_worker_event_failed type=%s", type(error).__name__)
+
+    async def _deliver_worker_event(self, event_id, timeout):
+        try:
+            async with asyncio.timeout(timeout):
+                await self.watcher.notifier.deliver(max_messages=1, event_id=event_id)
+        except Exception as error:
+            log.error("ui_worker_alert_failed type=%s", type(error).__name__)
 
     async def close(self):
         if self.task:
@@ -87,6 +189,7 @@ class Controller:
         if self.watcher:
             await self.watcher.__aexit__(None, None, None)
             self.watcher = None
+        self.retry_at = None
 
     def require_revision(self, value):
         if value != self.revision or self.disk_revision() != self.revision:
@@ -98,6 +201,8 @@ class Controller:
         config = parse_config(document, self.path.parent)
         for value in credentials.values():
             validate_webhook(value)
+        if not credentials.get("default"):
+            webhook_url(config.webhook_url_env)
         old = read_webhooks(self.config.secrets_path)
         await self.close()
         try:
@@ -123,6 +228,8 @@ class Controller:
             "http": {"min_request_gap_seconds": c.request_gap, "timeout_seconds": c.timeout},
             "notifications": {
                 "system_alerts_enabled": c.system_alerts,
+                "worker_alerts_enabled": c.worker_alerts,
+                "worker_alert_channel_id": c.worker_alert_channel,
                 "delivery_ttl_seconds": c.notification_ttl,
             },
         }
@@ -146,9 +253,12 @@ class Controller:
             "channels": [
                 {
                     "id": "default",
-                    "name": "預設頻道（環境變數）",
+                    "name": "預設頻道",
                     "configured": "default" in configured,
-                    "readonly": True,
+                    "readonly": False,
+                    "source": "ui"
+                    if read_webhooks(self.config.secrets_path).get("default")
+                    else "environment",
                 },
                 *[
                     {
@@ -163,6 +273,7 @@ class Controller:
             "health": self.watcher.health().data,
             "runner_active": self.task is not None and not self.task.done(),
             "runner_error": self.runner_error,
+            "worker_recovery": {"restart_count": self.restart_count, "retry_at": self.retry_at},
             "external_changes": self.disk_revision() != self.revision,
             "events": self.watcher.events(limit=20).data,
             "query_logs": {**query_logs, "error": self.watcher.query_log.error},
@@ -231,7 +342,16 @@ async def mutate(request):
         document = copy.deepcopy(c.document)
         credentials = read_webhooks(c.config.secrets_path)
         kind, ident = request.match_info["kind"], request.match_info.get("ident")
-        if kind in {"targets", "channels"}:
+        if kind == "channels" and ident == "default":
+            if request.method == "DELETE":
+                credentials.pop("default", None)
+            else:
+                value = body.get("value")
+                if not isinstance(value, dict) or set(value) - {"name", "webhook_url"}:
+                    raise ValueError
+                if value.get("webhook_url"):
+                    credentials["default"] = validate_webhook(value["webhook_url"])
+        elif kind in {"targets", "channels"}:
             entries = document.setdefault(kind, [])
             existing = next((item for item in entries if item["id"] == ident), None)
             if ident and not existing:
@@ -239,6 +359,8 @@ async def mutate(request):
             if request.method == "DELETE":
                 if kind == "channels" and any(t.channel_id == ident for t in c.config.targets):
                     raise Conflict("仍有監控使用此頻道，請先更換監控的通知頻道。")
+                if kind == "channels" and c.config.worker_alert_channel == ident:
+                    raise Conflict("服務異常通知仍使用此頻道，請先更換通知目的地。")
                 entries.remove(existing)
                 if kind == "channels":
                     credentials.pop(ident, None)

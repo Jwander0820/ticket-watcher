@@ -45,10 +45,14 @@ def validate_webhook(value: str) -> str:
 
 def channel_urls(config: Config) -> dict[str, str]:
     urls = {}
-    default = webhook_url(config.webhook_url_env)
+    stored = read_webhooks(config.secrets_path)
+    default = (
+        validate_webhook(stored["default"])
+        if stored.get("default")
+        else webhook_url(config.webhook_url_env)
+    )
     if default:
         urls["default"] = default
-    stored = read_webhooks(config.secrets_path)
     for channel in config.channels:
         if stored.get(channel.id):
             urls[channel.id] = validate_webhook(stored[channel.id])
@@ -61,6 +65,11 @@ class DiscordNotifier:
 
     def _format(self, notice: dict) -> dict | None:
         payload = notice["payload"]
+        if payload.get("worker_alert") and (
+            not self.config.worker_alerts
+            or payload.get("channel_id", "default") != self.config.worker_alert_channel
+        ):
+            return None
         if notice["target_id"]:
             target = next((t for t in self.config.targets if t.id == notice["target_id"]), None)
             state = self.store.target(notice["target_id"])

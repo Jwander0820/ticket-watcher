@@ -47,7 +47,12 @@
           <div><label for="active-min">快速間隔下限（秒）</label><input id="active-min" name="active_min" type="number" min="60" required></div><div><label for="active-max">快速間隔上限（秒）</label><input id="active-max" name="active_max" type="number" min="60" required></div>
           <div><label for="active-window">快速模式持續時間（秒）</label><input id="active-window" name="active_window" type="number" min="1" required></div><div><label for="exit-checks">連續幾次確認無票後退出快速模式</label><input id="exit-checks" name="exit_checks" type="number" min="1" required></div></div>
         </fieldset>
-        <fieldset><legend>連線與通知</legend><div class="form-grid"><div><label for="request-gap">每個請求至少間隔（秒）</label><input id="request-gap" name="request_gap" type="number" min="5" required></div><div><label for="timeout">連線逾時（秒）</label><input id="timeout" name="timeout" type="number" min="1" required></div><div><label for="notification-ttl">未送出通知保留時間（秒）</label><input id="notification-ttl" name="notification_ttl" type="number" min="1" required></div></div><label class="checkbox"><input id="system-alerts" name="system_alerts" type="checkbox">通知查詢異常與恢復狀態</label></fieldset>
+        <fieldset><legend>連線與通知</legend><div class="form-grid"><div><label for="request-gap">每個請求至少間隔（秒）</label><input id="request-gap" name="request_gap" type="number" min="5" required></div><div><label for="timeout">連線逾時（秒）</label><input id="timeout" name="timeout" type="number" min="1" required></div><div><label for="notification-ttl">未送出通知保留時間（秒）</label><input id="notification-ttl" name="notification_ttl" type="number" min="1" required></div></div><label class="checkbox"><input id="system-alerts" name="system_alerts" type="checkbox">通知查詢異常與恢復狀態（各監控的通知頻道）</label></fieldset>
+        <fieldset><legend>監控服務異常通知</legend>
+          <p class="muted">監控意外中止會自動重試；連續失敗時逐步延長，最後每 5 分鐘重試。持續運作 60 秒後才通知恢復；不會解除平台封鎖或人工暫停。</p>
+          <label class="checkbox" for="worker-alerts"><input id="worker-alerts" name="worker_alerts" type="checkbox">通知服務中止與穩定恢復</label>
+          <label for="worker-channel">服務通知頻道</label><p id="worker-channel-help" class="hint">可選預設頻道，或先到「Discord 頻道」新增專用 Webhook。關閉通知不影響自動恢復；整台主機離線時無法自行發送通知。</p><select id="worker-channel" name="worker_channel" aria-describedby="worker-channel-help"></select>
+        </fieldset>
         <p class="form-error" role="alert" tabindex="-1" hidden></p><div class="form-footer"><span class="muted">套用時保留票況紀錄與平台限流。</span><button type="submit" class="primary">儲存設定</button></div>
       </form>
     </section>

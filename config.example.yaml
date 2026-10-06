@@ -18,6 +18,8 @@ http:
 notifications:
   webhook_url_env: DISCORD_WEBHOOK_URL
   system_alerts_enabled: true
+  worker_alerts_enabled: true  # UI 監控意外中止／穩定恢復通知
+  worker_alert_channel_id: default  # 可選 UI 新增的專用頻道
   delivery_ttl_seconds: 600
   retry_delays_seconds: [10, 30, 60, 120, 300]
 
@@ -30,7 +32,7 @@ targets:
     platform: ticketplus
     url: https://ticketplus.com.tw/activity/e000000001
     enabled: false
-    channel_id: default  # 沿用 DISCORD_WEBHOOK_URL；UI 新增的頻道可個別指定
+    channel_id: default  # 優先用 UI 預設 Webhook，否則沿用 DISCORD_WEBHOOK_URL
     source: auto
     session_ids: []
     item_ids: []  # order 網址可篩選 a000... 票區或 p000... 票種；activity 不接受
