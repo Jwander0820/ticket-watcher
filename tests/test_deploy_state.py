@@ -1,11 +1,17 @@
+import importlib.util
 import json
 from pathlib import Path
 
 import pytest
 import yaml
 
-from scripts import deploy_state
 from ticket_watcher.storage import Store
+
+spec = importlib.util.spec_from_file_location(
+    "deploy_state", Path(__file__).resolve().parents[1] / "scripts/deploy_state.py"
+)
+deploy_state = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(deploy_state)
 
 
 @pytest.fixture
