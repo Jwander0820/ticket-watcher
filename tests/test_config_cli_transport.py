@@ -8,9 +8,43 @@ import httpx
 import pytest
 
 from ticket_watcher.cli import main
-from ticket_watcher.config import load_config, validate_url
+from ticket_watcher.config import load_config, parse_config, validate_url
 from ticket_watcher.models import SourceError
 from ticket_watcher.transport import PublicTransport, retry_after
+
+
+@pytest.mark.parametrize("value", [None, "", "   "])
+def test_empty_stop_time_is_normalized_to_none(tmp_path, value):
+    config = parse_config(
+        {
+            "targets": [
+                {
+                    "id": "test",
+                    "url": "https://ticketplus.com.tw/activity/e000000001",
+                    "stop_at": value,
+                }
+            ]
+        },
+        tmp_path,
+    )
+    assert config.targets[0].stop_at is None
+
+
+@pytest.mark.parametrize("value", [False, True, 0, 1, [], {}, ["2026-10-10"]])
+def test_non_date_stop_time_is_rejected_before_monitor_starts(tmp_path, value):
+    with pytest.raises(ValueError):
+        parse_config(
+            {
+                "targets": [
+                    {
+                        "id": "test",
+                        "url": "https://ticketplus.com.tw/activity/e000000001",
+                        "stop_at": value,
+                    }
+                ]
+            },
+            tmp_path,
+        )
 
 
 @pytest.mark.parametrize(

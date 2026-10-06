@@ -240,7 +240,6 @@ def test_run_keeps_polling_and_cleans_up_tasks_during_slow_delivery(harness, mon
     w = h["watcher"]
     enable(h, monkeypatch)
     enqueue_system(w, h["clock"]())
-    monkeypatch.setattr(service, "LOCAL_POLL_SECONDS", 0.01)
 
     async def scenario():
         started, second, cancelled = asyncio.Event(), asyncio.Event(), asyncio.Event()
@@ -268,6 +267,7 @@ def test_run_keeps_polling_and_cleans_up_tasks_during_slow_delivery(harness, mon
             try:
                 await asyncio.wait_for(started.wait(), 1)
                 h["clock"].advance(300)
+                w.wake()  # Advance the fake clock without waiting 300 real seconds.
                 await asyncio.wait_for(second.wait(), 1)
             finally:
                 task.cancel()

@@ -3,7 +3,8 @@ import sqlite3
 from contextlib import contextmanager
 from pathlib import Path
 
-from .config import Target
+from .config import Config, Target
+from .schedule import stop_info
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS targets (
@@ -48,12 +49,19 @@ CREATE TABLE IF NOT EXISTS metadata (
 CREATE TABLE IF NOT EXISTS runtime (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS outbox_due ON outbox(status, next_attempt);
 CREATE INDEX IF NOT EXISTS events_created ON events(created_at);
-PRAGMA user_version=2;
 """
 
 
 class LeaseLost(Exception):
     """A superseded query must not write results or error state."""
+
+
+class PlatformRestricted(Exception):
+    """A shared restriction stops further requests without counting a new failure."""
+
+    def __init__(self, reason: str, next_allowed_at: float | None = None):
+        super().__init__(reason)
+        self.reason, self.next_allowed_at = reason, next_allowed_at
 
 
 class Store:
@@ -75,9 +83,15 @@ class Store:
                         "ALTER TABLE outbox ADD COLUMN excluded_items TEXT NOT NULL DEFAULT '[]'"
                     )
         self.connection.executescript(SCHEMA)
+        if version != 2:
+            self.connection.execute("PRAGMA user_version=2")
 
     def close(self):
         self.connection.close()
+
+    def data_version(self) -> int:
+        # Changes made by this connection do not advance its data_version.
+        return self.connection.execute("PRAGMA data_version").fetchone()[0]
 
     @contextmanager
     def transaction(self):
@@ -188,6 +202,10 @@ class Store:
             state = db.execute("SELECT * FROM platform WHERE id='ticketplus'").fetchone()
             if state["lease_owner"] != owner or state["lease_until"] <= now:
                 raise LeaseLost
+            if state["paused_reason"]:
+                raise PlatformRestricted("PLATFORM_PAUSED")
+            if state["blocked_until"] > now:
+                raise PlatformRestricted("PLATFORM_BUSY_OR_BACKOFF", state["blocked_until"])
             if state["next_request"] > now:
                 return state["next_request"] - now
             db.execute(
@@ -264,6 +282,68 @@ class Store:
                 db.execute(
                     "UPDATE outbox SET status='CANCELLED' WHERE event_id=?", (row["event_id"],)
                 )
+
+    def cancel_obsolete_notices(self, config: Config, now: float):
+        # Cancellation must not depend on Discord's cooldown, delivery lease, or
+        # whether a webhook is configured. Once cancelled, work stays cancelled.
+        with self.transaction() as db:
+            targets = {
+                target.id: target
+                for target in config.targets
+                if target.enabled
+                and not stop_info(target, self.target_schedule(target), now)["stop_reason"]
+            }
+            channels = {"default", *(channel.id for channel in config.channels)}
+            rows = db.execute(
+                """SELECT e.id,e.target_id,e.payload FROM events e JOIN outbox o ON o.event_id=e.id
+                 WHERE o.status IN ('PENDING','INFLIGHT')"""
+            ).fetchall()
+            for row in rows:
+                payload = json.loads(row["payload"])
+                channel = payload.get("channel_id", "default")
+                obsolete = channel not in channels
+                if row["target_id"]:
+                    target = targets.get(row["target_id"])
+                    obsolete = (
+                        obsolete
+                        or not target
+                        or (
+                            channel != target.channel_id
+                            or payload.get("target_signature", target.signature) != target.signature
+                        )
+                    )
+                elif payload.get("worker_alert"):
+                    obsolete = (
+                        obsolete
+                        or not config.worker_alerts
+                        or channel != config.worker_alert_channel
+                    )
+                if obsolete:
+                    db.execute(
+                        "UPDATE outbox SET status='CANCELLED' WHERE event_id=?", (row["id"],)
+                    )
+
+    def next_notice_at(self, now: float, channels: set[str]) -> float | None:
+        # Unconfigured notices still need expiration, but must not cause an
+        # immediate-delivery loop. In-flight work waits for its actual lease.
+        expiry = self.connection.execute(
+            "SELECT min(expires_at) FROM outbox WHERE status IN ('PENDING','INFLIGHT')"
+        ).fetchone()[0]
+        if not channels:
+            return expiry
+        platform = self.platform("discord")
+        due = self.connection.execute(
+            """SELECT min(max(o.next_attempt,
+                CASE WHEN o.status='INFLIGHT' THEN coalesce(o.lease_until,0) ELSE 0 END,
+                ?,?)) FROM outbox o JOIN events e ON e.id=o.event_id
+                WHERE o.status IN ('PENDING','INFLIGHT')
+                AND coalesce(json_extract(e.payload,'$.channel_id'),'default') IN ("""
+            + ",".join("?" for _ in channels)
+            + ")",
+            (platform["blocked_until"], platform["lease_until"], *sorted(channels)),
+        ).fetchone()[0]
+        values = [value for value in (expiry, due) if value is not None]
+        return max(now, min(values)) if values else None
 
     def claim_notice(
         self,
@@ -402,12 +482,13 @@ class Store:
     def heartbeat(self, now: float):
         self.connection.execute("INSERT OR REPLACE INTO runtime VALUES('heartbeat',?)", (str(now),))
 
+    def next_prune_at(self, now: float) -> float:
+        row = self.connection.execute("SELECT value FROM runtime WHERE key='last_prune'").fetchone()
+        return float(row[0]) + 3600 if row else now
+
     def prune(self, now: float, days: int):
         def due():
-            row = self.connection.execute(
-                "SELECT value FROM runtime WHERE key='last_prune'"
-            ).fetchone()
-            return row is None or now - float(row[0]) >= 3600
+            return self.next_prune_at(now) <= now
 
         # Avoid a write transaction on every scheduler wake-up. Recheck under the
         # lock so multiple processes share the same hourly maintenance interval.

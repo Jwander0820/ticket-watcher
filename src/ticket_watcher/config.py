@@ -231,8 +231,12 @@ def parse_config(data: dict, directory: Path) -> Config:
                 raise ValueError(f"{key} 必須是非空 ID 字串的陣列")
             filters.append(tuple(values))
         stop = entry.get("stop_at")
-        if stop:
-            stop = datetime.fromisoformat(str(stop))
+        if isinstance(stop, str):
+            stop = stop.strip()
+            stop = datetime.fromisoformat(stop) if stop else None
+        elif stop is not None and not isinstance(stop, datetime):
+            raise ValueError("stop_at 必須是包含時區的日期時間或空值")
+        if stop is not None:
             if stop.tzinfo is None:
                 raise ValueError("stop_at 必須包含時區")
             stop = stop.timestamp()

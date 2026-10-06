@@ -55,6 +55,9 @@ class Observation:
     complete: bool = True
     request_count: int = 0
     session_starts: dict[str, float | None] | None = None
+    # When provided, these sessions account for all source incompleteness.
+    # None keeps an adapter's unspecified partial result conservative.
+    incomplete_session_ids: frozenset[str] | None = None
 
 
 class SourceError(Exception):

@@ -61,8 +61,20 @@ def channel_urls(config: Config) -> dict[str, str]:
 
 
 class DiscordNotifier:
-    def __init__(self, client: httpx.AsyncClient, store: Store, config: Config, clock=utcnow):
+    def __init__(
+        self,
+        client: httpx.AsyncClient,
+        store: Store,
+        config: Config,
+        clock=utcnow,
+        *,
+        on_change=None,
+    ):
         self.client, self.store, self.config, self.clock = client, store, config, clock
+        self.on_change = on_change
+
+    def next_delivery_at(self) -> float | None:
+        return self.store.next_notice_at(self.clock(), set(channel_urls(self.config)))
 
     def _format(self, notice: dict) -> dict | None:
         payload = notice["payload"]
@@ -158,6 +170,13 @@ class DiscordNotifier:
         return {"content": content[:2000], "allowed_mentions": {"parse": []}}
 
     async def deliver(self, max_messages: int = 10, *, event_id: str | None = None) -> dict:
+        try:
+            return await self._deliver(max_messages, event_id=event_id)
+        finally:
+            if self.on_change:
+                self.on_change()
+
+    async def _deliver(self, max_messages: int, *, event_id: str | None) -> dict:
         urls = channel_urls(self.config)
         if not urls:
             # Expire old work even when delivery has not been configured.

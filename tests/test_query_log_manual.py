@@ -7,6 +7,46 @@ from ticket_watcher.models import Result, SourceError
 from ticket_watcher.query_log import WEEK, QueryLog
 
 
+@pytest.mark.parametrize("operation", ["append", "read", "rename"])
+def test_rotation_failure_can_retry_without_losing_previous_week(harness, monkeypatch, operation):
+    h = harness
+    journal = h["watcher"].query_log
+    journal.record("kept", "manual", Result(), 0)
+    h["clock"].advance(WEEK)
+    path_type = type(journal.current)
+    original_open, original_replace = path_type.open, path_type.replace
+
+    def fail_open(path, mode="r", *args, **kwargs):
+        if (operation == "append" and path == journal.current and mode == "a") or (
+            operation == "read" and path == journal.previous and mode == "rb"
+        ):
+            raise OSError("simulated file failure")
+        return original_open(path, mode, *args, **kwargs)
+
+    def fail_after_rename(path, destination):
+        result = original_replace(path, destination)
+        if path == journal.current:
+            raise OSError("simulated interruption after rename")
+        return result
+
+    with monkeypatch.context() as patch:
+        patch.setattr(path_type, "open", fail_open)
+        if operation == "rename":
+            patch.setattr(path_type, "replace", fail_after_rename)
+        if operation == "read":
+            journal.recent()
+        else:
+            journal.record("failed", "manual", Result(), 0)
+        assert journal.error
+    restarted = QueryLog(h["watcher"].store, h["config"].database_path, h["clock"])
+    restarted.maintain()
+    assert [entry["target_id"] for entry in restarted.recent()["entries"]] == ["kept"]
+    restarted.record("new", "manual", Result(), 0)
+    assert [entry["target_id"] for entry in restarted.recent()["entries"]] == ["new", "kept"]
+    h["clock"].advance(WEEK)
+    assert [entry["target_id"] for entry in restarted.recent()["entries"]] == ["new"]
+
+
 def test_log_two_cycles_survive_restart_and_expire_without_new_queries(harness):
     h = harness
     journal = h["watcher"].query_log

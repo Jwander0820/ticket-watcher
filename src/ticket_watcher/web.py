@@ -21,6 +21,7 @@ from .models import utcnow
 from .notifications import channel_urls, validate_webhook, webhook_url
 from .private_io import atomic_text, read_webhooks
 from .service import Watcher
+from .storage import Store
 
 log = logging.getLogger(__name__)
 STATIC = Path(__file__).with_name("static")
@@ -60,6 +61,7 @@ class Controller:
         self.restart_count = 0
         self.retry_at = None
         self.actions = set()
+        self._pending_restore = None
 
     async def start(self):
         if not self.path.exists():
@@ -81,7 +83,7 @@ class Controller:
         self.runner_error = None
         startup_error = None
         try:
-            self.watcher = self.factory(self.config)
+            self.watcher = self._prepare_worker()
         except Exception as error:
             if not self.monitor:
                 raise
@@ -89,6 +91,25 @@ class Controller:
             self.runner_error = "監控啟動失敗，正在自動重試。"
         if self.monitor:
             self.task = asyncio.create_task(self._run(startup_error))
+
+    def _prepare_worker(self):
+        # A failed settings rollback must complete before any sender reads the
+        # credentials. The normal supervisor retries this even when no worker exists.
+        if self._pending_restore is not None:
+            path, original = self._pending_restore
+            if original is None:
+                path.unlink(missing_ok=True)
+            else:
+                atomic_text(path, original)
+            self._pending_restore = None
+        # Apply cancellation before constructing the replacement, so even a
+        # temporarily unavailable worker cannot revive notices on a later reload.
+        store = Store(self.config.database_path)
+        try:
+            store.cancel_obsolete_notices(self.config, utcnow())
+        finally:
+            store.close()
+        return self.factory(self.config)
 
     async def _run(self, startup_error=None):
         failures = 0
@@ -103,7 +124,7 @@ class Controller:
                     # Keep the old instance readable if constructing a replacement fails.
                     async with self.lock:
                         await self._stop_actions()
-                        replacement = self.factory(self.config)
+                        replacement = self._prepare_worker()
                         old, self.watcher = self.watcher, replacement
                         if old is not None:
                             cleanup = asyncio.create_task(old.__aexit__(None, None, None))
@@ -186,6 +207,7 @@ class Controller:
                         self.config.worker_alerts,
                         channel_id=self.config.worker_alert_channel,
                     )
+            self.watcher.wake()
         except Exception as error:
             log.error("ui_worker_event_failed type=%s", type(error).__name__)
 
@@ -224,6 +246,8 @@ class Controller:
         self.retry_at = None
 
     def require_revision(self, value):
+        if self._pending_restore is not None:
+            raise Conflict("設定儲存失敗，正在自動回復舊設定，請稍後再試。")
         if value != self.revision or self.disk_revision() != self.revision:
             raise Conflict(
                 "設定已在其他視窗或檔案中變更。請重新整理；若曾手動編輯檔案，請重啟 UI。"
@@ -235,17 +259,30 @@ class Controller:
             validate_webhook(value)
         if not credentials.get("default"):
             webhook_url(config.webhook_url_env)
-        old = read_webhooks(self.config.secrets_path)
+        secret_path = config.secrets_path
+        # Preserve both exact bytes (including whitespace) and original absence:
+        # the revision hashes file contents, not parsed JSON values.
+        original = secret_path.read_bytes().decode("utf-8") if secret_path.exists() else None
+        credentials_text = json.dumps(credentials, ensure_ascii=False)
+        document_text = yaml.safe_dump(document, allow_unicode=True, sort_keys=False)
+        revision = hashlib.sha256(
+            document_text.encode("utf-8") + b"\0" + credentials_text.encode("utf-8")
+        ).hexdigest()
         await self.close()
+        credentials_written = False
         try:
-            atomic_text(config.secrets_path, json.dumps(credentials, ensure_ascii=False))
-            atomic_text(self.path, yaml.safe_dump(document, allow_unicode=True, sort_keys=False))
+            atomic_text(secret_path, credentials_text)
+            credentials_written = True
+            atomic_text(self.path, document_text)
         except OSError:
-            atomic_text(self.config.secrets_path, json.dumps(old, ensure_ascii=False))
+            if credentials_written:
+                self._pending_restore = (secret_path, original)
+            # This catches rollback/constructor failures and schedules recovery;
+            # a failed first write needs no rollback and can restart immediately.
             self._start_worker()
             raise
         self.config, self.document = config, document
-        self.revision = self.disk_revision()
+        self.revision = revision
         self._start_worker()
 
     def settings(self):

@@ -172,6 +172,9 @@ class TicketPlusAdapter:
             tuple(items),
             source="ticketplus-public-v2/session",
             complete=all(x.status != TicketStatus.UNKNOWN for x in items),
+            incomplete_session_ids=frozenset(
+                x.session_id for x in items if x.status == TicketStatus.UNKNOWN
+            ),
             request_count=self.transport.count - before,
             session_starts={
                 ident: session_start(session.get("date"), session.get("time"))
@@ -296,6 +299,9 @@ class TicketPlusAdapter:
             source=f"ticketplus-public-v1/{kind}",
             granularity="AREA" if is_area else "PRODUCT",
             complete=all(x.status != TicketStatus.UNKNOWN for x in items),
+            incomplete_session_ids=frozenset(
+                x.session_id for x in items if x.status == TicketStatus.UNKNOWN
+            ),
             request_count=self.transport.count - before,
             session_starts={session_id: session_start(session.get("date"), session.get("time"))},
         )

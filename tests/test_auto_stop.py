@@ -11,6 +11,89 @@ from ticket_watcher.schedule import session_start
 from ticket_watcher.service import Watcher
 
 
+@pytest.mark.parametrize("missing", [False, True])
+def test_started_session_unknown_does_not_pause_remaining_sessions(harness, missing):
+    from test_ticketplus import SampleTransport
+
+    from ticket_watcher.platforms.ticketplus import TicketPlusAdapter
+
+    h, w = harness, harness["watcher"]
+
+    class TwoSessions(SampleTransport):
+        async def get_json(self, url, params):
+            if params.get("path", "").endswith("sessions.json"):
+                return {
+                    "sessions": [
+                        {"sessionId": "s000001778", "date": "2020-01-01", "time": "19:00"},
+                        {"sessionId": "s000001779", "date": "2099-01-01", "time": "19:00"},
+                    ]
+                }
+            return await super().get_json(url, params)
+
+    transport = TwoSessions(
+        h,
+        [
+            {"id": "s000001778", "status": "soldout"},
+            {"id": "s000001779", "status": "soldout"},
+        ],
+    )
+    w.adapter = TicketPlusAdapter(transport)
+
+    async def scenario():
+        await w._check("test", immediate=True)
+        transport.statuses = [{"id": "s000001779", "status": "soldout"}]
+        if not missing:
+            transport.statuses.append({"id": "s000001778", "status": "unknown_status"})
+        # Standalone queries still report the complete source, including past shows.
+        assert not (await w.query(w.config.targets[0].url)).data["complete"]
+        for _ in range(3):
+            h["clock"].now = w.store.target("test")["next_check"]
+            result = await w._check("test", immediate=True)
+            assert result.data["complete"]
+        state = w.store.target("test")
+        assert state["paused_reason"] is None and state["parse_failures"] == 0
+        transport.statuses[0]["status"] = "onsale"
+        result = await w._check("test", immediate=True)
+        assert result.data["evaluation"]["release_detected"]
+        assert [change["item_key"] for change in result.data["changes"]] == ["s000001779"]
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("case", ["future_unknown", "auto_stop_disabled", "unspecified_partial"])
+def test_auto_stop_preserves_other_incomplete_data_protection(harness, case):
+    h, w = harness, harness["watcher"]
+    times = {"s000000001": h["clock"]() - 10, "s000000002": h["clock"]() + 86400}
+
+    class PartialSource:
+        async def fetch(self, target):
+            observation = await h["source"].fetch(target)
+            return replace(
+                observation,
+                session_starts=times,
+                incomplete_session_ids=None
+                if case == "unspecified_partial"
+                else frozenset(
+                    item.session_id for item in observation.items if item.status == "UNKNOWN"
+                ),
+            )
+
+    w.adapter = PartialSource()
+    if case == "auto_stop_disabled":
+        w.config = replace(w.config, targets=(replace(w.config.targets[0], auto_stop=False),))
+    statuses = ("SOLD_OUT", "UNKNOWN") if case == "future_unknown" else ("UNKNOWN", "SOLD_OUT")
+    if case == "unspecified_partial":
+        statuses = ("SOLD_OUT", "SOLD_OUT")
+    for _ in range(3):
+        state = w.store.target("test")
+        if state:
+            h["clock"].now = state["next_check"]
+        h["source"].push(*statuses, complete=False)
+        result = asyncio.run(w._check("test", immediate=True))
+        assert not result.data["complete"]
+    assert w.store.target("test")["paused_reason"] == "PARSE"
+
+
 @pytest.mark.parametrize(
     "date,time,expected",
     [

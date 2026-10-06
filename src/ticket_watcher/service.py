@@ -16,12 +16,12 @@ from .notifications import DiscordNotifier
 from .platforms.ticketplus import TicketPlusAdapter
 from .query_log import QueryLog
 from .schedule import stop_info, stopped_sessions
-from .storage import LeaseLost, Store
+from .storage import LeaseLost, PlatformRestricted, Store
 from .transport import PublicTransport
 
 log = logging.getLogger(__name__)
-LOCAL_POLL_SECONDS = 5
 HEARTBEAT_INTERVAL_SECONDS = 30
+MAINTENANCE_RETRY_SECONDS = 30
 
 
 def capabilities() -> Result:
@@ -93,6 +93,9 @@ class Watcher:
         self.config, self.clock = config, clock
         self.rng = rng or random.SystemRandom()
         self.store = Store(config.database_path)
+        self._data_version = self.store.data_version()
+        self._poll_waiters = set()
+        self._delivery_waiters = set()
         self.query_log = QueryLog(self.store, config.database_path, clock)
         self._owns_client = client is None
         self.client = client or httpx.AsyncClient(
@@ -103,7 +106,32 @@ class Watcher:
         )
         self.transport = PublicTransport(self.client, self.store, config, clock)
         self.adapter = adapter or TicketPlusAdapter(self.transport)
-        self.notifier = DiscordNotifier(self.client, self.store, config, clock)
+        self.notifier = DiscordNotifier(
+            self.client, self.store, config, clock, on_change=self._wake_delivery
+        )
+
+    def _wake_delivery(self):
+        for event in self._delivery_waiters:
+            event.set()
+
+    def wake(self):
+        """Recalculate deadlines after a local operation changes shared state."""
+        for event in self._poll_waiters:
+            event.set()
+        self._wake_delivery()
+
+    async def _wait_until(self, changed: asyncio.Event, deadline: float | None):
+        if deadline is None:
+            await changed.wait()
+        else:
+            delay = max(0, deadline - self.clock())
+            if delay == 0:
+                await asyncio.sleep(0)
+                return
+            try:
+                await asyncio.wait_for(changed.wait(), timeout=delay)
+            except TimeoutError:
+                pass
 
     async def __aenter__(self):
         return self
@@ -155,9 +183,12 @@ class Watcher:
             return observation
         except LeaseLost:
             return self._deferred("QUERY_SUPERSEDED")
+        except PlatformRestricted as restriction:
+            return self._deferred(restriction.reason, restriction.next_allowed_at)
         finally:
             # State application is protected by the same lease in check(), below.
             self.store.release(owner)
+            self.wake()
 
     def _system(self, db, message: str, target_id: str | None = None):
         self.store.enqueue(
@@ -409,7 +440,15 @@ class Watcher:
                     "UPDATE items SET observed='UNKNOWN',observed_at=? WHERE target_id=? AND item_key=?",
                     (now, target.id, key),
                 )
-            complete = observation.complete and not missing
+            # Past shows no longer affect monitoring completeness. Only relax a
+            # partial result when the adapter identifies every incomplete session.
+            complete = not missing and (
+                observation.complete
+                or (
+                    bool(observation.incomplete_session_ids)
+                    and observation.incomplete_session_ids <= stopped
+                )
+            )
             self.store.cancel_unavailable(db, target.id, unavailable)
             self.store.cancel_unavailable(db, target.id, no_hints, kind="RELEASE_HINT")
             active_until, no_available = old["active_until"], old["no_available"]
@@ -645,8 +684,11 @@ class Watcher:
                 )
         except LeaseLost:
             return self._deferred("QUERY_SUPERSEDED")
+        except PlatformRestricted as restriction:
+            return self._deferred(restriction.reason, restriction.next_allowed_at)
         finally:
             self.store.release(owner)
+            self.wake()
         return result
 
     def status(self, ident=None, *, detail=False, limit=50, offset=0) -> Result:
@@ -740,19 +782,10 @@ class Watcher:
 
     async def _check_due(self, wakeup: asyncio.Event) -> list[Result]:
         results = []
+        self.store.cancel_obsolete_notices(self.config, self.clock())
         enabled_ids = {
             t.id for t in self.config.targets if t.enabled and not self._stop_info(t)["stop_reason"]
         }
-        with self.store.transaction() as db:
-            for row in db.execute(
-                """SELECT DISTINCT e.target_id FROM outbox o JOIN events e ON e.id=o.event_id
-                 WHERE o.status IN ('PENDING','INFLIGHT') AND e.target_id IS NOT NULL"""
-            ).fetchall():
-                if row[0] not in enabled_ids:
-                    db.execute(
-                        "UPDATE outbox SET status='CANCELLED' WHERE status IN ('PENDING','INFLIGHT') AND event_id IN (SELECT id FROM events WHERE target_id=?)",
-                        (row[0],),
-                    )
         for target in self.config.targets:
             if target.id not in enabled_ids:
                 continue
@@ -766,32 +799,36 @@ class Watcher:
             results.append(await self._check(target.id))
             wakeup.set()
             await asyncio.sleep(0)
-        self.store.prune(self.clock(), self.config.retention_days)
         return results
 
     async def _delivery_loop(self, wakeup: asyncio.Event, stop: asyncio.Event) -> dict:
         sent = 0
-        while True:
-            # Capture before delivery: if checks finish during a request, perform
-            # one final pass for events enqueued while that request was in flight.
-            stopping = stop.is_set()
-            wakeup.clear()
-            result = await self.notifier.deliver()
-            sent += result["sent"]
-            if stopping:
-                return {**result, "sent": sent}
-            try:
-                await asyncio.wait_for(wakeup.wait(), timeout=LOCAL_POLL_SECONDS)
-            except TimeoutError:
-                pass
+        self._delivery_waiters.add(wakeup)
+        try:
+            while True:
+                # A one-shot tick still finishes with one final delivery pass.
+                stopping = stop.is_set()
+                result = await self.notifier.deliver()
+                sent += result["sent"]
+                if stopping:
+                    return {**result, "sent": sent}
+                # Changes during delivery are included in the fresh deadline
+                # below. Clear before reading, so later signals cannot be lost.
+                wakeup.clear()
+                if not stop.is_set():
+                    await self._wait_until(wakeup, self.notifier.next_delivery_at())
+        finally:
+            self._delivery_waiters.discard(wakeup)
 
     @asynccontextmanager
     async def _heartbeat(self):
         stop = asyncio.Event()
         self.store.heartbeat(self.clock())
         self.query_log.maintain()
+        self.store.prune(self.clock(), self.config.retention_days)
         async with asyncio.TaskGroup() as tasks:
             tasks.create_task(self._heartbeat_loop(stop))
+            tasks.create_task(self._maintenance_loop(stop))
             try:
                 yield
             finally:
@@ -803,7 +840,25 @@ class Watcher:
                 await asyncio.wait_for(stop.wait(), timeout=HEARTBEAT_INTERVAL_SECONDS)
             except TimeoutError:
                 self.store.heartbeat(self.clock())
+                # SQLite provides a cheap version for commits from OTHER
+                # connections. Reuse the heartbeat wakeup for CLI/resume changes;
+                # unchanged state causes no scan of targets or the outbox.
+                version = self.store.data_version()
+                if version != self._data_version:
+                    self._data_version = version
+                    self.wake()
+
+    async def _maintenance_loop(self, stop: asyncio.Event):
+        while not stop.is_set():
+            now = self.clock()
+            if self.store.next_prune_at(now) <= now:
+                self.store.prune(now, self.config.retention_days)
+            if self.query_log.next_rotation_at() <= now:
                 self.query_log.maintain()
+            deadlines = (self.store.next_prune_at(now), self.query_log.next_rotation_at())
+            # A failed filesystem operation needs a bounded retry, not a hot loop.
+            deadline = min(at if at > now else now + MAINTENANCE_RETRY_SECONDS for at in deadlines)
+            await self._wait_until(stop, deadline)
 
     def health(self) -> Result:
         row = self.store.connection.execute(
@@ -843,6 +898,7 @@ class Watcher:
                 db.execute(
                     "UPDATE targets SET paused_reason=NULL,parse_failures=0 WHERE id=?", (ident,)
                 )
+        self.wake()
         return Result(
             data={"resumed": "ticketplus" if platform else ident, "cooldowns_preserved": True}
         )
@@ -854,6 +910,44 @@ class Watcher:
             tasks.create_task(self._poll_loop(wakeup))
 
     async def _poll_loop(self, wakeup: asyncio.Event):
-        while True:
-            await self._check_due(wakeup)
-            await asyncio.sleep(LOCAL_POLL_SECONDS)
+        changed = asyncio.Event()
+        self._poll_waiters.add(changed)
+        try:
+            while True:
+                await self._check_due(wakeup)
+                changed.clear()
+                await self._wait_until(changed, self._next_check_at())
+        finally:
+            self._poll_waiters.discard(changed)
+
+    def _next_check_at(self) -> float | None:
+        now = self.clock()
+        platform = self.store.platform()
+        deadlines = []
+        for target in self.config.targets:
+            if not target.enabled:
+                continue
+            schedule = self.store.target_schedule(target)
+            stops = [
+                at
+                for at in (
+                    target.stop_at,
+                    schedule["stop_at"] if target.auto_stop and schedule else None,
+                )
+                if at is not None
+            ]
+            if stops:
+                stop_at = min(stops)
+                if stop_at <= now:
+                    continue
+                # Cancel notices at the stop deadline even during a long cooldown.
+                deadlines.append(stop_at)
+            if platform["paused_reason"]:
+                continue
+            state = self.store.target(target.id)
+            current = state and state["signature"] == target.signature
+            if current and state["paused_reason"]:
+                continue
+            due = state["next_check"] if current else now
+            deadlines.append(max(now, due, platform["blocked_until"], platform["lease_until"]))
+        return min(deadlines) if deadlines else None

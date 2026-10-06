@@ -13,6 +13,64 @@ from ticket_watcher.service import Watcher
 from ticket_watcher.web import Controller
 
 
+@pytest.mark.parametrize("restriction", ["RATE_LIMITED", "BLOCKED"])
+@pytest.mark.parametrize("operation", ["query", "check"])
+def test_late_platform_restriction_stops_current_query_before_next_http(
+    harness, restriction, operation
+):
+    h, w = harness, harness["watcher"]
+    requests = []
+
+    async def scenario():
+        h["source"].push("SOLD_OUT")
+        await w._check("test", immediate=True)
+        baseline = w.store.items("test")
+        state = w.store.target("test")
+        w.store.acquire("old-query", h["clock"](), 180)
+        h["clock"].advance(181)
+
+        def handle(request):
+            requests.append(request)
+            if len(requests) == 1:
+                result = w._error(SourceError(restriction, "late response", 900), owner="old-query")
+                assert result.data["reason"] == "QUERY_SUPERSEDED"
+            return httpx.Response(200, json={"ok": True})
+
+        class TwoRequestSource:
+            async def fetch(self, target):
+                await w.transport.get_json("https://example.invalid/first", {})
+                h["clock"].advance(w.config.request_gap)
+                await w.transport.get_json("https://example.invalid/second", {})
+                h["source"].push("AVAILABLE")
+                return await h["source"].fetch(target)
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:
+            w.transport.client = client
+            w.adapter = TwoRequestSource()
+            result = (
+                await w.query(URL)
+                if operation == "query"
+                else await w._check("test", immediate=True)
+            )
+        assert len(requests) == 1
+        assert result.execution_status == "DEFERRED"
+        assert result.data["reason"] == (
+            "PLATFORM_PAUSED" if restriction == "BLOCKED" else "PLATFORM_BUSY_OR_BACKOFF"
+        )
+        platform = w.store.platform()
+        assert platform["lease_owner"] is None and platform["failures"] == 0
+        if restriction == "BLOCKED":
+            assert platform["paused_reason"] == "BLOCKED"
+        else:
+            assert platform["blocked_until"] > h["clock"]()
+            assert result.data["next_allowed_at"] is not None
+        assert w.store.items("test") == baseline
+        assert w.store.target("test") == state
+        assert not w.events().data["events"]
+
+    asyncio.run(scenario())
+
+
 @pytest.mark.parametrize("late_error", [None, "NETWORK", "BLOCKED", "RATE_LIMITED"])
 def test_superseded_check_cannot_change_newer_baseline_or_errors(harness, late_error):
     h, w = harness, harness["watcher"]
