@@ -13,6 +13,8 @@
 | [CLI 與程式整合](cli.md) | 指令選擇、JSON、退出碼、Python 呼叫 |
 | [維運與疑難排解](operations.md) | 健康狀態、通知送達、保護性暫停、監控恢復與日誌 |
 | [部署與 VPS 搬移](vps-migration.md) | UI／CLI Compose、備份還原、Tunnel／SSH、資源上限 |
+| [VPS 上線準備](vps-launch-plan.md) | DNS、PORT、Access／Tunnel、GitHub 自動更新、驗收與回復 |
+| [VPS 初次設定](vps-setup.md) | 空白控制台、部署金鑰、GitHub Secrets、GHCR 與上線操作 |
 
 ## 開發與介面參考
 
@@ -42,4 +44,5 @@
 | [.env.example](../.env.example) | Compose 注入的 Webhook、公開 origin 與資源限制 |
 | [examples/ticketplus-cases.yaml](../examples/ticketplus-cases.yaml) | 公開案例設定，目標預設全部停用 |
 | [compose.ui.yaml](../compose.ui.yaml) | 控制台與內建監控，使用獨立 UI volume |
+| [compose.vps.yaml](../compose.vps.yaml) | VPS 固定 volume、已驗證映像與本地入口 |
 | [compose.yaml](../compose.yaml) | 純 CLI 常駐監控，唯讀掛載設定 |

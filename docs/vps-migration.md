@@ -2,6 +2,8 @@
 
 [文件索引](README.md) · [控制台操作](ui.md) · [維運與疑難排解](operations.md)
 
+正式部署前先參考 [VPS 上線準備與 DNS 設計](vps-launch-plan.md)，確認入口名稱、Tunnel 拓撲、Access 與切換驗收。
+
 ## 選擇執行方式
 
 兩份 Compose 使用同一套程式，但管理方式與資料 volume 不同。只啟動需要的服務，避免重複監控相同目標。

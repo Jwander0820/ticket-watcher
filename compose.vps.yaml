@@ -1,0 +1,38 @@
+name: ticket-watcher
+services:
+  ticket-watcher-ui:
+    image: ${TICKET_WATCHER_IMAGE:?Set TICKET_WATCHER_IMAGE to a tested image}
+    pull_policy: never
+    command: ["--config", "/app/data/ui-config.yaml", "ui", "--host", "0.0.0.0", "--port", "8787"]
+    restart: unless-stopped
+    init: true
+    stop_grace_period: 45s
+    cpus: ${TICKET_WATCHER_CPUS:-0.50}
+    mem_limit: ${TICKET_WATCHER_MEMORY:-256m}
+    pids_limit: ${TICKET_WATCHER_PIDS:-64}
+    environment:
+      DISCORD_WEBHOOK_URL: ${DISCORD_WEBHOOK_URL:-}
+      TICKET_WATCHER_PUBLIC_ORIGIN: ${TICKET_WATCHER_PUBLIC_ORIGIN:-}
+    ports:
+      - "127.0.0.1:8787:8787"
+    volumes:
+      - watcher-ui-data:/app/data
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    healthcheck:
+      test: ["CMD", "ticket-watcher", "--config", "/app/data/ui-config.yaml", "health", "--json"]
+      interval: 10s
+      timeout: 5s
+      start_period: 15s
+      retries: 6
+    logging:
+      driver: json-file
+      options:
+        max-size: 5m
+        max-file: '3'
+volumes:
+  watcher-ui-data:
+    name: ticket-watcher-ui-data

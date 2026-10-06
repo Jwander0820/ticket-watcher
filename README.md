@@ -70,6 +70,8 @@ python -m venv .venv
 | 使用 CLI、JSON 或 Python | [CLI 與程式整合](docs/cli.md) |
 | 排查沒查票、沒通知、查日誌與健康狀態 | [維運與疑難排解](docs/operations.md) |
 | 使用 Docker、搬移資料、遠端存取 | [部署與 VPS 搬移](docs/vps-migration.md) |
+| 準備 VPS 上線、選 DNS 名稱與 Tunnel PORT | [VPS 上線準備](docs/vps-launch-plan.md) |
+| 設定 GitHub 推送自動更新 VPS | [VPS 初次設定與自動更新](docs/vps-setup.md) |
 | 安裝開發依賴、執行測試、了解程式結構 | [開發指南](docs/development.md) |
 | 查閱 AI 操作、來源對照與歷史驗證 | [完整文件索引](docs/README.md) |
 
