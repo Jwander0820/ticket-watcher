@@ -1,5 +1,7 @@
 # TicketPlus 公開資料來源驗證
 
+[文件索引](README.md) · [設計規格](spec.md) · [案例實測](ticketplus-cases.md)
+
 驗證日期：2026-10-05（Asia/Taipei）。僅發出公開唯讀 HTTP GET，未登入、未排隊、未呼叫占位或訂單端點。
 
 ## 已確認
@@ -55,6 +57,6 @@
 - 內頁最多 1000 個公開項目，每 100 個批次查詢；不只看第一批。activity 不接受 item_ids；order 支援票區或票種 ID 篩選，仍先讀完整場次再篩選、分頁。
 - 所有觀測依賴公開 API 的當下回應；沒有點入受保護的購票、座位選取或訂單流程。
 - 沒有官方公開 API 穩定性承諾。前端欄位或 ID 格式變更可能使來源失效；三次解析異常後保存暫停狀態。
-- 本機的公開存取已驗證；VPS 出口存取、真實釋票轉換與 Discord 實際送達尚須部署後驗證。
+- 本機的公開存取於上述日期驗證；該次驗證未包含 VPS 出口存取、真實釋票轉換與 Discord 實際送達，部署環境需另行確認。
 
 HTTP client 的連線重用與 webhook 確認方式參考 [HTTPX 官方文件](https://www.python-httpx.org/async/) 與 [Discord Execute Webhook](https://docs.discord.com/developers/resources/webhook#execute-webhook)。

@@ -1,10 +1,53 @@
-# 本機 UI 搬移到 VPS
+# Docker 部署與 VPS 搬移
+
+[文件索引](README.md) · [控制台操作](ui.md) · [維運與疑難排解](operations.md)
+
+## 選擇執行方式
+
+兩份 Compose 使用同一套程式，但管理方式與資料 volume 不同。只啟動需要的服務，避免重複監控相同目標。
+
+| 項目 | UI 控制台 | 純 CLI 常駐 |
+| --- | --- | --- |
+| Compose | `compose.ui.yaml` | `compose.yaml`（預設） |
+| 服務 | `ticket-watcher-ui` | `ticket-watcher` |
+| 設定 | 容器 `/app/data/ui-config.yaml`，由 UI 管理 | 宿主機 `config.yaml` 唯讀掛至 `/app/config.yaml` |
+| 資料 volume | `watcher-ui-data` | `watcher-data` |
+| 網路入口 | 宿主機 `127.0.0.1:8787` | 不發布入站 port |
+| 健康檢查啟動緩衝 | 30 秒 | 60 秒 |
+
+Compose 預設以非 root、唯讀容器檔案系統執行，可寫資料保存於 volume，程序日誌自動輪替。兩種 volume 不會自動同步；Git 也不包含私有設定或執行資料。
+
+## 首次部署
+
+UI 從專案根目錄執行 `docker compose -f compose.ui.yaml up -d --build`，完整新增監控步驟見 [控制台指南](ui.md)。已有本機 UI 資料時，直接依下節搬移，不需逐項重新建立。
+
+純 CLI 部署先建立設定（以下為 Linux shell）：
+
+```sh
+cp config.example.yaml config.yaml
+cp .env.example .env
+```
+
+編輯 `config.yaml` 的網址，至少啟用一個目標，並在 `.env` 設定 Webhook；欄位說明見 [設定指南](configuration.md)。確認後啟動：
+
+```sh
+docker compose up -d --build
+docker compose logs --tail 100 -f
+docker compose exec ticket-watcher ticket-watcher --config /app/config.yaml health --json
+docker compose exec ticket-watcher ticket-watcher --config /app/config.yaml status --json
+```
+
+`logs -f` 持續顯示日誌，按 Ctrl+C 離開後再執行後續命令，容器會繼續運作。設定範例的 `data/watcher.db` 相對於容器 `/app/config.yaml` 解析成 `/app/data/watcher.db`，因此容器內 CLI 與常駐程序讀取同一 DB。宿主機的獨立 CLI 不會直接取得 named volume 狀態。
+
+修改掛載的 CLI `config.yaml` 後，以 `docker compose restart ticket-watcher` 重新載入；修改 `.env` 後以 `docker compose up -d` 重新建立需要更新的容器。停止服務使用 `docker compose down`，不加 `--volumes` 會保留資料。
+
+## 本機 UI 資料搬移
 
 UI 新增的 Discord 頻道、監控目標、票況基準和日誌都在 `watcher-ui-data` volume；只 clone Git 不會取得它們。搬移整份資料便不必重新填寫。Git 的排除規則包含執行設定、Webhook、SQLite、查詢日誌與 `backups/`；請勿強制加入 Git 或上傳備份到公開位置。
 
 以下是手動搬移步驟，並未自動執行備份或傳送。需先確定 VPS 的 Docker 與 Compose 已可使用。
 
-## Windows 匯出
+### Windows 匯出
 
 從專案根目錄執行，先停止寫入 SQLite，再複製完整資料目錄（包含可能存在的 WAL／SHM）：
 
@@ -14,11 +57,11 @@ New-Item -ItemType Directory -Force -Path backups/ui-data | Out-Null
 docker compose -f compose.ui.yaml cp ticket-watcher-ui:/app/data/. backups/ui-data/
 ```
 
-確認備份包含 `ui-config.yaml`、`discord-webhooks.json`、`watcher.db`，若已有新日誌則會有 `watcher-logs/`。Webhook 是明文憑證，備份需私下保管；此命令不會顯示其內容。資料目錄備份不包含宿主機 `.env`，若使用環境變數預設頻道，需另行安全搬移 `.env`；UI 儲存的預設頻道與命名頻道均已在 JSON 檔內。
+確認備份包含 `ui-config.yaml`、`watcher.db`，以及已建立的 `discord-webhooks.json` 與 `watcher-logs/`。尚未透過 UI 儲存 Webhook 或尚無查詢紀錄時，對應檔案可能不存在。Webhook 是明文憑證，備份需私下保管；此命令不會顯示其內容。資料目錄備份不包含宿主機 `.env`，若使用環境變數預設頻道，需另行安全搬移 `.env`；UI 儲存的預設頻道與命名頻道均已在 JSON 檔內。
 
 以 SSH/SCP 私下將 `backups/ui-data/` 傳到 VPS 專案的 `backups/ui-data/`。正式切換時保持本機服務停止，避免兩端各自查票與通知。若暫時只做備份，可用 `docker compose -f compose.ui.yaml start ticket-watcher-ui` 恢復本機監控，正式搬移時重新備份。
 
-## VPS 還原
+### VPS 還原
 
 先取得相同或較新的程式版本。在尚未使用、可放入這份資料的新 UI volume 上操作；不要覆蓋已有其他監控資料的 volume。
 
@@ -35,7 +78,7 @@ docker compose -f compose.ui.yaml exec -T ticket-watcher-ui ticket-watcher --con
 
 確認 heartbeat 健康、目標和頻道數量相符，再觀察下一次查詢紀錄。搬移後保留基準、原排程與限流等待；未送達事件也保留，超過 TTL 的通知不補發。更換網路出口後的 TicketPlus 存取是否正常需在 VPS 上實測。
 
-UI 會自動重新建立意外中止的監控工作，重試間隔為 5、15、30、60 秒，之後每 5 分鐘一次。「輪詢設定 → 監控服務異常通知」可指定告警頻道；確認該頻道已設定 Webhook。程序完全退出時仍依 Compose 的重啟政策處理；主機離線告警需要外部監測。平台保護性暫停不會自動解除。
+UI 會自動重新建立意外中止的監控工作，程序完全退出時仍依 Compose 的重啟政策處理。搬移後可在「輪詢設定 → 監控服務異常通知」確認告警目的地；重試流程、健康資訊與日誌見 [維運指南](operations.md)。平台保護性暫停不會自動解除。
 
 ## 遠端查看控制台
 

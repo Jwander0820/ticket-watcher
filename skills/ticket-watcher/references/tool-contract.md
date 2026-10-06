@@ -1,7 +1,11 @@
 # Tool contract v1.0
 
+[Skill entry point](../SKILL.md)
+
 Every JSON result includes `schema_version: "1.0"`, `execution_status` and `result_source`.
 This contract describes CLI query/control results; the local UI has a separate internal HTTP API.
+
+## UI and notification destinations
 
 `ui` starts a loopback control panel and its own monitoring worker (default port 8787 and `data/ui-config.yaml`). Do not run a second `run` against the same UI-managed database. UI saves reload the worker while preserving schedules, platform cooldowns and unchanged source baselines. Manual file edits require restarting the UI.
 
@@ -9,7 +13,11 @@ Each target has a `channel_id` (default `default`, using the UI-stored default w
 
 The UI supervises unexpected worker termination with 5/15/30/60/300-second delays (300 seconds thereafter), fresh worker connections, and preserved SQLite state. One failure event is created per incident; recovery is recorded after 60 seconds of continuous operation. `notifications.worker_alerts_enabled` and `worker_alert_channel_id` control these SYSTEM notices independently of target query alerts. Disabling or rerouting worker notices cancels old queued notices at delivery. Deliberate UI shutdown/reload is not a failure. CLI `run` still exits on unexpected failure for the process/container supervisor to restart. Neither mechanism clears protective platform pauses or guarantees alerts during host/network/storage outages.
 
-Execution status: COMPLETED (exit 0), FAILED (2), DEFERRED (3), UNSUPPORTED (4). Source: LIVE, CACHE, LOCAL. A completed partial observation still has `complete: false` and UNKNOWN items.
+## Execution and query semantics
+
+Execution status: COMPLETED (exit 0), FAILED (2), DEFERRED (3), UNSUPPORTED (4). `health` exits 1 when it cannot confirm process health; interruption exits 130. Source: LIVE, CACHE, LOCAL. A completed partial observation still has `complete: false` and UNKNOWN items.
+
+DEFERRED means no valid query/evaluation completed. Inspect `reason` and respect `next_allowed_at`; some requests may already have been made before a restriction or lease loss. `QUERY_SUPERSEDED` discards a stale query result without changing the current baseline or target failure counts. Late rate-limit or blocking signals still preserve shared platform protection.
 
 `query --url <URL>` returns current availability, `evaluation.performed: false`, `release_detected: null`, and `notification.status: NOT_APPLICABLE`. It never writes monitoring baselines or creates events. Shared request controls and metadata cache are persisted.
 
@@ -17,21 +25,31 @@ Execution status: COMPLETED (exit 0), FAILED (2), DEFERRED (3), UNSUPPORTED (4).
 
 Explicit `check --now` (or Python `check(..., immediate=True)`) and the UI manual-check button bypass only the normal target schedule. Platform leases, request gaps, Retry-After/backoff, target error backoff, pauses, disabled flags and stop times still apply. Manual results update the same monitoring baseline and can create notifications. Default CLI checks and scheduled polling retain their previous behavior.
 
+`auto_stop` defaults to true. Monitoring persists reliable public session start times interpreted in Asia/Taipei, stops notices for sessions that have started, and stops the whole target only when all selected sessions have reliable times and have started. Unknown times do not imply a stop. Explicit timezone-aware `stop_at` and automatic deadlines use the earlier value. One-off `query` neither obeys nor updates monitoring stop deadlines.
+
+## Records and result fields
+
 Completed/failed checks and one-off queries append an allowlisted JSON line to `<database-stem>-logs/queries.log`. Explicit deferred attempts are also recorded; automatic scheduler waits are omitted. One seven-day current cycle and one previous cycle are retained, with the cycle start persisted in SQLite. UI exposes the most recent 100 records. Records exclude URLs, credential values, names and raw exceptions. Query logs are separate from the existing event-retention policy.
 
 Change timestamps `previous_observed_at` and `observed_at` are UTC Unix seconds in event payloads. Top-level times and cached item times are ISO 8601 UTC. `monitoring_gap` is true when valid observations are over 45 minutes apart. Event detection time is not an exact inventory update time.
 
 `status --target <id> --detail full` reports last valid state/time separately from current observation. `events` returns compact summaries of state changes, errors, system alerts and releases with delivery status; add `--detail full` for original change payloads. `--limit` is 1–500; `--offset` starts at 0; `next_offset` null ends the page. Pagination only reduces presentation after full parsing/evaluation.
 
-`tick` completes one local scheduling round, running delivery alongside the checks and waiting for the final delivery pass before returning. Inspect each result in `checks` and `delivery`; the outer COMPLETED does not imply every source succeeded. `run` keeps polling and delivery in separate foreground tasks, so slow notifications do not delay subsequent polling rounds. Both operations update heartbeat independently every 30 seconds. `health` reads local heartbeat only and exits 1 if absent/stale.
+## Scheduling and recovery
+
+`tick` completes one local scheduling round, running delivery alongside the checks and waiting for the final delivery pass before returning. Inspect each result in `checks` and `delivery`; the outer COMPLETED does not imply every source succeeded. `run` keeps polling and delivery in separate foreground tasks, so slow notifications do not delay subsequent polling rounds. Both operations update heartbeat independently every 30 seconds. `health` reads SQLite in read-only mode without creating/migrating storage or starting a Watcher. It reports heartbeat, recent target query results, platform pause and pending-notification count; it exits 1 if health cannot be confirmed, including absent/stale heartbeat, missing database or unsupported schema.
 
 Errors: NETWORK, RATE_LIMITED, BLOCKED, PARSE, UNSUPPORTED. Requests share a minimum 5-second gap and persistent leases. 429 waits use the later of Retry-After and local backoff. Repeated schema problems pause the target; access refusal pauses the platform. Resume is a manual action and preserves cooldowns.
 
 A complete successful query resets the shared platform failure count without clearing cooldowns or writing monitoring baselines. Cached status summaries cover all items, while detail pages are read with SQL pagination. Historical retention cleanup runs at most once per hour across callers sharing the database; delivery expiry checks remain independent of this cleanup interval.
 
-Outbox: PENDING, INFLIGHT, SENT, CANCELLED, EXPIRED, FAILED, DISABLED. Stable event IDs allow identifying possible delivery duplicates after lost acknowledgements. Without a configured webhook, work remains PENDING until its 10-minute TTL expires.
+## Delivery guarantees
+
+Outbox: PENDING, INFLIGHT, SENT, CANCELLED, EXPIRED, FAILED, DISABLED. Stable event IDs allow identifying possible delivery duplicates after lost acknowledgements. Without a configured webhook, work remains PENDING until its default 10-minute TTL expires.
 
 New target notification payloads include `target_signature`, binding them to the configuration that created them. Each delivery claim has a distinct owner; late responses cannot revive cancelled work or overwrite a newer claim. Already-issued HTTP requests cannot be recalled. Existing pending events without a signature remain readable and use the existing cancellation and current-target checks.
+
+## Source interpretation
 
 Activity URLs use SESSION and return order_url in full item detail. Order URLs use AREA if the session has ticket areas, otherwise PRODUCT. They accept matching item_ids; activity URLs reject item filters. Items add source_status, availability_text, remaining_count, session_name and order_url. remaining_count is a displayed 0-20 quantity; hot-sale values, including counts above 20, are null. Ticket names retain eligibility distinctions such as disability tickets. Individual seats and purchase success are not queried.
 

@@ -1,5 +1,9 @@
 # 第一版驗證紀錄
 
+[文件索引](README.md) · [目前功能規格](spec.md) · [重新執行驗證](development.md)
+
+此頁保留 v0.1.0 當時的結果與限制，不是目前版本的驗證總表。後續票區／票種來源的歷史實測見 [案例紀錄](ticketplus-cases.md)。
+
 日期：2026-10-05，Asia/Taipei。程式版本：0.1.0。
 
 | 檢查 | 結果 |
@@ -20,4 +24,4 @@
 
 Windows 受限沙箱阻擋 pytest 預設暫存目錄與 asyncio 初始化。驗證改在正常本機環境執行，pytest 資料固定留在專案內，完成後移除；這項環境限制未透過修改程式行為解決。
 
-仍未驗證：VPS 出口的實際存取、真實釋票事件、實際 Discord webhook 送達。未啟動常駐監控、部署到 VPS 或發布套件。來源目前僅支援場次層級，詳見 [ticketplus-source.md](ticketplus-source.md)。
+此輪未驗證：VPS 出口的實際存取、真實釋票事件、實際 Discord webhook 送達。此輪未啟動常駐監控、部署到 VPS 或發布套件。v0.1.0 當時僅支援場次層級；目前來源範圍見 [資料來源說明](ticketplus-source.md)。

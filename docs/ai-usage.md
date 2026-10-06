@@ -1,5 +1,7 @@
 # AI 操作指引與提示詞
 
+[文件索引](README.md) · [CLI 指南](cli.md) · [工具契約](../skills/ticket-watcher/references/tool-contract.md)
+
 優先用已安裝的 Ticket Watcher 工具，避免重寫 crawler 或以瀏覽器畫面取代已驗證 API。先執行 `ticket-watcher capabilities --json` 確認版本和粒度。
 
 | 使用者需求 | 操作 |
@@ -11,11 +13,11 @@
 | 明確要求當下檢查既有監控 | `check --target <id> --now --json` |
 | 授權外部排程執行一輪 | `tick --json` |
 
-status、events、check、tick 以 `--config` 指向監控程序相同設定。VPS 使用 Docker 時，用 `docker compose exec ticket-watcher ticket-watcher --config /app/config.yaml <操作>`。本機另一份 DB 不等於 VPS 狀態。
+status、events、check、tick 以 `--config` 指向監控程序相同設定；query 也應使用相同 DB 才能共用節流。純 CLI Docker 使用 `docker compose exec ticket-watcher ticket-watcher --config /app/config.yaml <操作>`；UI Docker 使用 `docker compose -f compose.ui.yaml exec ticket-watcher-ui ticket-watcher --config /app/data/ui-config.yaml <操作>`。本機另一份 DB 不等於 VPS 狀態。
 
 `query.evaluation.release_detected` 固定為 null；只有監控比較並建立 RELEASE 事件，才可稱偵測到由無票轉有票。RELEASE_HINT／release_hint_detected 是外頁「暫無票券」線索，不能宣稱目前有票。CACHE 結果報出原始觀測時間與資料年齡；UNKNOWN 保留的最後有效值不能當作目前已確認有票。
 
-DEFERRED 表示未查網站，遵守 next_allowed_at；平台暫停必須先人工確認問題再用 resume，不能自動解除或以別的出口繼續打。UNSUPPORTED 表示所需粒度不支援，不能忽略 item_ids 改成查整場。
+DEFERRED 表示本次未完成有效查詢／評估，需查看 reason 並遵守 next_allowed_at。它可能在發出部分請求後出現；QUERY_SUPERSEDED 代表租約失效的舊結果被捨棄，不能一概稱為未查網站。平台暫停必須先人工確認問題再用 resume，不能自動解除或以別的出口繼續打。UNSUPPORTED 表示所需粒度不支援，不能忽略 item_ids 改成查整場。
 
 `--now` 只略過目標的例行排程，仍遵守平台租約、每次 HTTP 請求間隔、暫停及錯誤退避。這是監控檢查，可能產生釋票通知；只想查看且不通知時仍使用 `query`。
 
