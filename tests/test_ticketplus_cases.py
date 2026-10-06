@@ -101,10 +101,11 @@ def test_sale_order_preserves_ticket_type_and_matches_visible_count(harness):
     assert items["p000017500"].remaining_count == 1 and items["p000017500"].price == 250
 
 
-def test_order_item_filter_fetches_full_batch_before_selecting_ticket_type(harness):
+def test_order_item_filter_fetches_only_selected_ticket_type(harness):
     result, transport = fetch(harness, SALE, ORDER, item_ids=("p000017499",))
     assert len(result.items) == 1 and result.items[0].name == "全票"
-    assert set(transport.requests[-1]["productId"].split(",")) == {"p000017499", "p000017500"}
+    assert result.complete
+    assert transport.requests[-1]["productId"] == "p000017499"
 
 
 def test_order_rejects_conflicting_session_filter_without_http(harness):
@@ -159,7 +160,8 @@ def test_unavailable_inventory_cannot_report_positive_count():
     ) == ("SOLD_OUT", "暫無票券", 0)
 
 
-def test_more_than_100_areas_are_batched_without_truncation(harness):
+@pytest.mark.parametrize("selected", [0, 1, 110])
+def test_more_than_100_areas_are_batched_without_truncation(harness, selected):
     transport = CaseTransport(harness, YUURI)
     sid = transport.case["sessions"][0]["sessionId"]
     internal = internal_id(sid, "s")
@@ -169,15 +171,20 @@ def test_more_than_100_areas_are_batched_without_truncation(harness):
         ident = f"a{900000000 + i:09d}"
         transport.case["ticketAreas"].append({**static, "ticketAreaId": ident})
         transport.case["live"][internal]["ticketArea"].append({**dynamic, "id": ident})
+    filters = tuple(f"a{900000000 + i:09d}" for i in range(selected))
     result = asyncio.run(
         TicketPlusAdapter(transport).fetch(
-            Target("test", "test", f"https://ticketplus.com.tw/order/{YUURI}/{sid}")
+            Target(
+                "test", "test", f"https://ticketplus.com.tw/order/{YUURI}/{sid}", item_ids=filters
+            )
         )
     )
-    assert result.complete and len(result.items) == 181
+    assert result.complete and len(result.items) == (selected or 181)
+    if selected:
+        assert {item.item_key for item in result.items} == set(filters)
     assert [
         len(x["ticketAreaId"].split(",")) for x in transport.requests if "ticketAreaId" in x
-    ] == [100, 81]
+    ] == {0: [100, 81], 1: [1], 110: [100, 10]}[selected]
 
 
 def test_order_product_release_compares_quantity_and_formats_ticket_name(harness, monkeypatch):

@@ -34,7 +34,7 @@ YUURI 的日期以本次公開場次資料為準，是 10/9、10/10；使用者�
 .\.venv\Scripts\ticket-watcher.exe query --url 'https://ticketplus.com.tw/order/6def673ab73ab7d7a4d0597ae84809ca/c2e30fcb68cdcd8cee2b3576dd4fe2f5' --detail full
 ```
 
-每次先查完整來源再做輸出分頁，`--limit 3` 不會只評估前三個票區。票區／票種可指定 `--item-id a000...` 或 `--item-id p000...`，不合此場的項目會明確報錯。
+每次先查完整選定範圍再做輸出分頁，`--limit 3` 不會只評估前三個票區。票區／票種可指定 `--item-id a000...` 或 `--item-id p000...`，先以完整靜態清單驗證後，只查選定項目的動態票況；不合此場的項目會明確報錯。未指定項目仍查全部公開項目。
 
 ## 監控設定與驗證
 

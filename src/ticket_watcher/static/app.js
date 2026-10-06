@@ -4,8 +4,14 @@ const esc = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => ({"&":"
 const ticketLabels = {AVAILABLE:"有票", SOLD_OUT:"售完", UNKNOWN:"未知", UPCOMING:"尚未開賣", TEMPORARILY_UNAVAILABLE:"暫無票券・線索", PAUSED:"停售", ENDED:"已結束"};
 const noticeLabels = {PENDING:"待送", INFLIGHT:"傳送中", SENT:"已送達", CANCELLED:"已取消", EXPIRED:"已過期", FAILED:"傳送失敗", DISABLED:"不通知", NOT_REQUIRED:"不需通知"};
 const eventLabels = {RELEASE:"偵測到可購票", RELEASE_HINT:"發現釋票線索", SYSTEM:"系統通知", ERROR:"查詢異常", STATE_CHANGE:"票況變化"};
-let state = null, view = "targets", settingsDirty = false, refreshing = false, toastTimer;
+let state = null, view = "targets", settingsDirty = false, refreshing = false, refreshAgain = false, toastTimer;
 const checking = new Set();
+const renderedViews = new Map();
+function renderChanged(name, value, draw) {
+  const signature = JSON.stringify(value);
+  if (renderedViews.get(name) === signature) return;
+  draw(); renderedViews.set(name, signature);
+}
 const reasonLabels = {NOT_DUE:"尚未到例行查詢時間", TARGET_BACKOFF:"前次查詢異常，等待退避期限", TARGET_DISABLED_OR_STOPPED:"監控已停用或到期", TARGET_PAUSED:"目標已暫停，需人工解除", PLATFORM_PAUSED:"平台已暫停，需人工處理", PLATFORM_BUSY_OR_BACKOFF:"平台正在查詢或等待限流期限", NETWORK:"網路異常", RATE_LIMITED:"平台限制頻率", BLOCKED:"平台拒絕存取", PARSE:"資料解析異常", UNSUPPORTED:"不支援的資料來源", INTERNAL_ERROR:"程序異常", CANCELLED:"服務重新載入或停止"};
 Object.assign(reasonLabels, {SHOW_STARTED:"選定場次均已開始，已自動停止", QUERY_SUPERSEDED:"查詢已過期或被接手，舊結果未寫入"});
 const effectiveStop = (target) => target.state?.effective_stop_at || target.stop_at;
@@ -78,23 +84,42 @@ function render() {
   $("#global-error").textContent = warning; $("#global-error").hidden = !warning;
   $("#platform-warning").hidden = !state.health.platform_paused;
   $("#platform-warning").innerHTML = state.health.platform_paused ? `TicketPlus 平台已暫停查詢。確認存取問題處理完成後，再解除暫停。<button class="secondary" data-action="resume-platform">解除平台暫停</button>` : "";
-  renderTargets(); renderChannels(); renderEvents(); renderQueryLogs(); fillSettings();
-  document.querySelectorAll('[data-action="check"]').forEach((button) => {
-    if (checking.has(button.dataset.id)) { button.disabled = true; button.textContent = "查詢中…"; }
-  });
-  $("#last-refresh").textContent = `上次更新 ${new Date().toLocaleTimeString("zh-TW",{hour12:false})} · 每 10 秒更新狀態`;
+  if (view === "targets") {
+    renderChanged(view, [state.targets, state.channels, state.health.pending_notifications, state.targets.map(isStopped)], renderTargets);
+    document.querySelectorAll('[data-action="check"]').forEach((button) => {
+      const target = state.targets.find((item) => item.id === button.dataset.id), busy = checking.has(button.dataset.id);
+      button.disabled = busy || !target.enabled || isStopped(target);
+      const label = busy ? "查詢中…" : "查詢一次";
+      if (button.textContent !== label) button.textContent = label;
+    });
+  } else if (view === "channels") renderChanged(view, state.channels, renderChannels);
+  else if (view === "events" && state.events) renderChanged(view, [state.events, state.targets], renderEvents);
+  else if (view === "logs" && state.query_logs) renderChanged(view, [state.query_logs, state.targets], renderQueryLogs);
+  else if (view === "settings" && !settingsDirty) renderChanged(view, [state.settings, state.channels, state.revision], fillSettings);
+  $("#last-refresh").textContent = `上次更新 ${new Date().toLocaleTimeString("zh-TW",{hour12:false})} · 每 30 秒更新狀態`;
 }
 async function refresh() {
-  if (refreshing) return;
+  if (refreshing) { refreshAgain = true; return; }
   refreshing = true;
-  try { state = await api("/api/state"); render(); }
+  const requestedView = view, previousState = state;
+  try {
+    const update = await api(`/api/state?view=${requestedView}`);
+    // A completed save wins over an earlier in-flight status request.
+    if (state === previousState) { state = {...state, ...update}; render(); }
+    else refreshAgain = true;
+  }
   catch (error) { $("#global-error").textContent = `無法更新控制台：${error.message}`; $("#global-error").hidden = false; $("#service-state").textContent = "連線中斷"; }
-  finally { refreshing = false; }
+  finally {
+    refreshing = false;
+    if (refreshAgain || view !== requestedView) { refreshAgain = false; void refresh(); }
+  }
 }
 function navigate(next) {
   view = next;
   document.querySelectorAll(".view").forEach((section) => { section.hidden = section.id !== `${view}-view`; });
   document.querySelectorAll("[data-view]").forEach((button) => { if (button.dataset.view === view) button.setAttribute("aria-current","page"); else button.removeAttribute("aria-current"); });
+  if (state) render();
+  void refresh();
 }
 function resetForm(form, id="") {
   form.reset(); form.dataset.id = id; form.dataset.revision = state.revision;
@@ -214,4 +239,5 @@ document.addEventListener("blur", (event) => {
 }, true);
 document.addEventListener("input", (event) => { if (event.target.matches?.("input,select") && event.target.validity.valid) event.target.removeAttribute("aria-invalid"); });
 refresh();
-setInterval(() => { if (!document.hidden) refresh(); }, 10000);
+document.addEventListener("visibilitychange", () => { if (!document.hidden) void refresh(); });
+setInterval(() => { if (!document.hidden) void refresh(); }, 30000);

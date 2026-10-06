@@ -240,9 +240,10 @@ class TicketPlusAdapter:
             raise SourceError("PARSE", "場次沒有可辨識的公開票區或票種")
         if len(visible) > 1000:
             raise SourceError("UNSUPPORTED", "場次項目數超過目前完整查詢上限")
-        # Batch all visible items before pagination or filters. Never truncate silently.
+        # Validate against the full static list, then fetch every selected item.
+        # Output pagination never limits the inventory that gets evaluated.
         rows = {}
-        ids = sorted(visible)
+        ids = sorted(wanted or visible)
         for start in range(0, len(ids), 100):
             data = await self.transport.get_json(
                 STATUS_API, {ident_field: ",".join(ids[start : start + 100])}

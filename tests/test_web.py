@@ -55,7 +55,7 @@ def test_ui_manual_check_ignores_routine_schedule_and_returns_logs(tmp_path):
 
 
 @asynccontextmanager
-async def panel(tmp_path, *, monitor=False):
+async def panel(tmp_path, *, monitor=False, public_origin=None):
     requests = []
 
     def respond(request):
@@ -66,6 +66,7 @@ async def panel(tmp_path, *, monitor=False):
         app = create_app(
             tmp_path / "ui-config.yaml",
             monitor=monitor,
+            public_origin=public_origin,
             watcher_factory=lambda c: Watcher(c, client=transport),
         )
         async with TestClient(TestServer(app)) as client:

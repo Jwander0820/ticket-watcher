@@ -10,6 +10,7 @@ from zoneinfo import ZoneInfo
 import httpx
 
 from .config import Config
+from .http_body import ACCEPT_ENCODING, DISCORD_BODY_LIMIT, ResponseBodyError, read_body
 from .models import utcnow
 from .private_io import read_webhooks
 from .schedule import stop_info, stopped_sessions
@@ -207,29 +208,45 @@ class DiscordNotifier:
                 # Bound the whole request, including a response that trickles in,
                 # so an active sender cannot outlive its database lease.
                 async with asyncio.timeout(self.config.timeout):
-                    response = await self.client.post(url, params={"wait": "true"}, json=payload)
+                    async with self.client.stream(
+                        "POST",
+                        url,
+                        params={"wait": "true"},
+                        json=payload,
+                        headers={"Accept-Encoding": ACCEPT_ENCODING},
+                    ) as response:
+                        if response.status_code == 429:
+                            error = "RATE_LIMITED"
+                            delay = retry_after(response.headers.get("Retry-After"), self.clock())
+                        elif 400 <= response.status_code < 500:
+                            error, terminal = f"HTTP_{response.status_code}", True
+                        body = (
+                            await read_body(response, DISCORD_BODY_LIMIT)
+                            if response.status_code == 429 or 200 <= response.status_code < 300
+                            else b""
+                        )
                 if response.status_code == 429:
-                    error = "RATE_LIMITED"
-                    delay = retry_after(response.headers.get("Retry-After"), self.clock())
                     try:
-                        server_delay = float(response.json().get("retry_after", 0))
+                        server_delay = float(json.loads(body).get("retry_after", 0))
                         if math.isfinite(server_delay):
                             delay = max(delay, server_delay)
                     except (ValueError, TypeError, AttributeError):
                         pass
                 elif 200 <= response.status_code < 300:
                     try:
-                        value = response.json().get("id")
+                        value = json.loads(body).get("id")
                         if isinstance(value, str) and value:
                             message_id = value
                         else:
                             error = "ACKNOWLEDGEMENT_MISSING"
                     except (ValueError, AttributeError):
                         error = "ACKNOWLEDGEMENT_MISSING"
-                elif 400 <= response.status_code < 500:
-                    error, terminal = f"HTTP_{response.status_code}", True
+            except ResponseBodyError:
+                if error != "RATE_LIMITED":
+                    error = "INVALID_RESPONSE_BODY"
             except (httpx.HTTPError, TimeoutError):
-                error = "NETWORK_OR_TIMEOUT"
+                if error != "RATE_LIMITED":
+                    error = "NETWORK_OR_TIMEOUT"
             now = self.clock()
             if message_id:
                 if self.store.finish_notice(notice, now, "SENT", message_id=message_id):

@@ -5,8 +5,12 @@ services:
     command: ["--config", "/app/data/ui-config.yaml", "ui", "--host", "0.0.0.0", "--port", "8787"]
     restart: unless-stopped
     init: true
+    cpus: ${TICKET_WATCHER_CPUS:-0.50}
+    mem_limit: ${TICKET_WATCHER_MEMORY:-256m}
+    pids_limit: ${TICKET_WATCHER_PIDS:-64}
     environment:
       DISCORD_WEBHOOK_URL: ${DISCORD_WEBHOOK_URL:-}
+      TICKET_WATCHER_PUBLIC_ORIGIN: ${TICKET_WATCHER_PUBLIC_ORIGIN:-}
     ports:
       - "127.0.0.1:8787:8787"
     volumes:

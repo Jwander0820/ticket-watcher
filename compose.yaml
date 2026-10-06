@@ -3,6 +3,9 @@ services:
     build: .
     restart: unless-stopped
     init: true
+    cpus: ${TICKET_WATCHER_CPUS:-0.50}
+    mem_limit: ${TICKET_WATCHER_MEMORY:-256m}
+    pids_limit: ${TICKET_WATCHER_PIDS:-64}
     environment:
       DISCORD_WEBHOOK_URL: ${DISCORD_WEBHOOK_URL:-}
     volumes:

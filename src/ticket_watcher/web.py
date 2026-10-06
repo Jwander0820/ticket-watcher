@@ -1,10 +1,11 @@
-"""Loopback-only control panel. The UI process owns its monitoring worker."""
+"""Private control panel for loopback or an explicitly configured Access origin."""
 
 import asyncio
 import copy
 import hashlib
 import json
 import logging
+import re
 import secrets
 import uuid
 from contextlib import suppress
@@ -303,7 +304,7 @@ class Controller:
             },
         }
 
-    def state(self):
+    def state(self, view="all"):
         states = (
             {s["target_id"]: s for s in self.watcher.status().data["targets"]}
             if self.watcher
@@ -317,12 +318,7 @@ class Controller:
             )
             targets.append({**value, "state": states.get(target.id, {})})
         configured = set(channel_urls(self.config))
-        query_logs = (
-            {**self.watcher.query_log.recent(), "error": self.watcher.query_log.error}
-            if self.watcher
-            else {"entries": [], "cycle_started_at": None, "error": None}
-        )
-        return {
+        data = {
             "csrf": self.csrf,
             "revision": self.revision,
             "settings": self.settings(),
@@ -360,29 +356,57 @@ class Controller:
             "runner_error": self.runner_error,
             "worker_recovery": {"restart_count": self.restart_count, "retry_at": self.retry_at},
             "external_changes": self.disk_revision() != self.revision,
-            "events": self.watcher.events(limit=20).data
-            if self.watcher
-            else {
-                "events": [],
-                "total": 0,
-                "next_offset": None,
-            },
-            "query_logs": query_logs,
         }
+        if view in {"all", "events"}:
+            data["events"] = (
+                self.watcher.events(limit=20).data
+                if self.watcher
+                else {"events": [], "total": 0, "next_offset": None}
+            )
+        if view in {"all", "logs"}:
+            data["query_logs"] = (
+                {**self.watcher.query_log.recent(), "error": self.watcher.query_log.error}
+                if self.watcher
+                else {"entries": [], "cycle_started_at": None, "error": None}
+            )
+        return data
 
 
 CONTROLLER = web.AppKey("controller", Controller)
+PUBLIC_ORIGIN = web.AppKey("public_origin", str)
+
+
+def normalize_public_origin(value: str | None) -> str:
+    if not value:
+        return ""
+    if not re.fullmatch(r"https://[A-Za-z0-9][A-Za-z0-9.-]*(?::[0-9]{1,5})?/?", value):
+        raise ValueError("公開 origin 必須是 HTTPS 網域，可含連接埠，不可含路徑或查詢參數")
+    parts = urlsplit(value)
+    port = parts.port  # Validate before starting a worker or creating any files.
+    if port == 0:
+        raise ValueError("公開 origin 連接埠不正確")
+    return f"https://{parts.hostname}" + (f":{port}" if port not in (None, 443) else "")
 
 
 @web.middleware
 async def protect(request, handler):
     controller = request.app[CONTROLLER]
     try:
-        host = urlsplit("http://" + request.host).hostname
-        if host not in {"localhost", "127.0.0.1", "::1"}:
+        authority = request.host.lower()
+        host = urlsplit("http://" + authority)
+        if host.username or host.password or host.path or host.query or host.fragment:
             raise web.HTTPForbidden()
+        port = host.port
+        local = host.hostname in {"localhost", "127.0.0.1", "::1"}
+        public_origin = request.app[PUBLIC_ORIGIN]
+        public_authority = authority.removesuffix(":443") if port == 443 else authority
+        if not local and (not public_origin or public_authority != public_origin[8:]):
+            raise web.HTTPForbidden()
+        allowed_origins = {public_origin} if public_origin else set()
+        if local:
+            allowed_origins.add(f"{request.scheme}://{request.host}")
         origin = request.headers.get("Origin")
-        if origin and origin != f"{request.scheme}://{request.host}":
+        if origin and origin not in allowed_origins:
             raise web.HTTPForbidden()
         if request.headers.get("Sec-Fetch-Site") == "cross-site":
             raise web.HTTPForbidden()
@@ -419,8 +443,11 @@ async def protect(request, handler):
 
 
 async def state(request):
+    view = request.query.get("view", "all")
+    if view not in {"all", "targets", "channels", "events", "logs", "settings"}:
+        raise ValueError
     async with request.app[CONTROLLER].lock:
-        return web.json_response(request.app[CONTROLLER].state())
+        return web.json_response(request.app[CONTROLLER].state(view))
 
 
 async def mutate(request):
@@ -571,8 +598,9 @@ async def deliver_test(watcher, event_id):
     return {"notification": watcher.store.notification_status(event_id)}
 
 
-def create_app(path: Path, *, watcher_factory=Watcher, monitor=True):
+def create_app(path: Path, *, watcher_factory=Watcher, monitor=True, public_origin=None):
     app = web.Application(middlewares=[protect], client_max_size=65536)
+    app[PUBLIC_ORIGIN] = normalize_public_origin(public_origin)
     app[CONTROLLER] = Controller(path, watcher_factory=watcher_factory, monitor=monitor)
 
     async def lifecycle(app):
@@ -610,10 +638,10 @@ def create_app(path: Path, *, watcher_factory=Watcher, monitor=True):
     return app
 
 
-async def serve(path: Path, host="127.0.0.1", port=8787):
+async def serve(path: Path, host="127.0.0.1", port=8787, *, public_origin=None):
     if host not in {"127.0.0.1", "localhost", "::1", "0.0.0.0"} or not 1 <= port <= 65535:
         raise ValueError("UI 位址或連接埠不正確")
-    runner = web.AppRunner(create_app(path), access_log=None)
+    runner = web.AppRunner(create_app(path, public_origin=public_origin), access_log=None)
     await runner.setup()
     try:
         await web.TCPSite(runner, host, port).start()

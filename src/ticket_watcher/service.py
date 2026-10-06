@@ -11,6 +11,7 @@ import httpx
 
 from . import __version__
 from .config import Config, Target
+from .health import health_snapshot
 from .models import Observation, Result, SourceError, TicketStatus, timestamp, utcnow
 from .notifications import DiscordNotifier
 from .platforms.ticketplus import TicketPlusAdapter
@@ -861,32 +862,7 @@ class Watcher:
             await self._wait_until(stop, deadline)
 
     def health(self) -> Result:
-        row = self.store.connection.execute(
-            "SELECT value FROM runtime WHERE key='heartbeat'"
-        ).fetchone()
-        heartbeat = float(row[0]) if row else None
-        healthy = heartbeat is not None and self.clock() - heartbeat < 120
-        pending = self.store.connection.execute(
-            "SELECT count(*) FROM outbox WHERE status IN ('PENDING','INFLIGHT')"
-        ).fetchone()[0]
-        return Result(
-            data={
-                "process_healthy": healthy,
-                "last_heartbeat": timestamp(heartbeat),
-                "platform_paused": self.store.platform()["paused_reason"],
-                "pending_notifications": pending,
-                "observations": [
-                    {
-                        "target_id": t.id,
-                        "last_success": timestamp(
-                            (self.store.target(t.id) or {}).get("last_success")
-                        ),
-                        "last_error": (self.store.target(t.id) or {}).get("last_error"),
-                    }
-                    for t in self.config.targets
-                ],
-            }
-        )
+        return health_snapshot(self.store.connection, self.config.targets, self.clock())
 
     def resume(self, ident=None, *, platform=False) -> Result:
         # Explicit manual intervention clears pauses, but never clears server cooldowns.

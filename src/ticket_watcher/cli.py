@@ -2,13 +2,13 @@ import argparse
 import asyncio
 import json
 import logging
+import os
 import sqlite3
 import sys
 from pathlib import Path
 
 from .config import load_config
 from .models import Result
-from .service import Watcher, capabilities
 
 
 def parser() -> argparse.ArgumentParser:
@@ -34,6 +34,11 @@ def parser() -> argparse.ArgumentParser:
         if command == "ui":
             p.add_argument("--host", default="127.0.0.1")
             p.add_argument("--port", type=int, default=8787)
+            p.add_argument(
+                "--public-origin",
+                default=os.environ.get("TICKET_WATCHER_PUBLIC_ORIGIN"),
+                help="Cloudflare Access 保護的 HTTPS origin，例如 https://tickets.example.com",
+            )
         if command == "query":
             p.add_argument("--url", required=True)
             p.add_argument("--session-id", action="append", default=[])
@@ -57,12 +62,19 @@ def parser() -> argparse.ArgumentParser:
 
 async def execute(args) -> Result:
     if args.operation == "capabilities":
+        from .service import capabilities
+
         return capabilities()
     config_path = args.config
     if args.operation == "ui":
         from .web import serve
 
-        await serve(config_path or Path("data/ui-config.yaml"), args.host, args.port)
+        await serve(
+            config_path or Path("data/ui-config.yaml"),
+            args.host,
+            args.port,
+            public_origin=args.public_origin,
+        )
         return Result()
     if config_path is None and Path("config.yaml").is_file():
         config_path = Path("config.yaml")
@@ -71,6 +83,12 @@ async def execute(args) -> Result:
     if hasattr(args, "limit") and (not 1 <= args.limit <= 500 or args.offset < 0):
         raise ValueError("limit 必須介於 1 和 500，offset 不可小於 0")
     config = load_config(config_path)
+    if args.operation == "health":
+        from .health import read_health
+
+        return read_health(config)
+    from .service import Watcher
+
     async with Watcher(config) as watcher:
         paging = {"limit": getattr(args, "limit", 50), "offset": getattr(args, "offset", 0)}
         detail = getattr(args, "detail", "summary") == "full"
@@ -91,8 +109,6 @@ async def execute(args) -> Result:
                 return await watcher.check(args.target, detail=detail, immediate=args.now, **paging)
             case "tick":
                 return await watcher.tick()
-            case "health":
-                return watcher.health()
             case "resume":
                 return watcher.resume(args.target, platform=bool(args.platform))
             case "run":

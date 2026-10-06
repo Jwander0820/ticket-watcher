@@ -39,12 +39,57 @@ UI 會自動重新建立意外中止的監控工作，重試間隔為 5、15、3
 
 ## 遠端查看控制台
 
-Compose 仍只發布 VPS 的 `127.0.0.1:8787`。在自己的電腦建立 SSH tunnel：
+### Cloudflare Tunnel + Access
+
+Compose 保持只發布 VPS 的 `127.0.0.1:8787`。以下假設 `cloudflared` 跑在同一台 VPS 宿主機；若它在另一個容器，該容器的 `127.0.0.1` 不是宿主機，需另外安排私有網路連線與 origin 隔離。
+
+1. 為完整網域（例如 `tickets.example.com`，含所有路徑）建立 Access self-hosted application，Allow policy 僅允許自己的帳號，不設 Bypass。
+2. Tunnel 的公開網域指向 `http://127.0.0.1:8787`，保留原本的公開 Host；啟用 **Protect with Access**，讓 cloudflared 驗證 Access JWT，並填入此 application 的 team name 與 AUD tag。
+3. VPS 專案 `.env` 加入 `TICKET_WATCHER_PUBLIC_ORIGIN=https://tickets.example.com`，再重建／啟動 UI。這是完整 HTTPS origin，可含非預設連接埠，不含子路徑或參數。直接執行 Python 時用 `ui --public-origin https://tickets.example.com` 或同名程序環境變數。
+
+若使用本機管理的 Tunnel，將以下 ingress 加到既有 cloudflared 設定，替換範例值；保留原本的 tunnel ID 與 credentials-file：
+
+```yaml
+ingress:
+  - hostname: tickets.example.com
+    service: http://127.0.0.1:8787
+    originRequest:
+      access:
+        required: true
+        teamName: your-team-name
+        audTag:
+          - your-access-application-aud
+  - service: http_status:404
+```
+
+`TICKET_WATCHER_PUBLIC_ORIGIN` 是應用程式的 Host／Origin 白名單，不會建立 Access policy 或在 Python 內驗證 JWT；身分驗證由 Access 與 cloudflared 負責。`X-Forwarded-Host`、`X-Forwarded-Proto` 不會自動加入信任範圍。所有設定修改仍需要 CSRF token；本機 loopback 存取保持可用，因此 VPS 本機程序屬於信任範圍。
+
+正式啟用前，確認未登入和非允許帳號都無法讀取 `/api/state`，自己的帳號登入後可以載入及儲存設定，VPS 公網 IP 的 8787 埠不可直接連線。這些檢查需在自己的 Cloudflare 與 VPS 環境完成。
+
+依據：[Cloudflare origin Access 驗證參數](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/configure-tunnels/origin-parameters/#access)。
+
+### SSH tunnel
+
+不使用公開網域時，保留空白的 `TICKET_WATCHER_PUBLIC_ORIGIN`，在自己的電腦建立 SSH tunnel：
 
 ```sh
 ssh -N -L 8788:127.0.0.1:8787 user@your-vps
 ```
 
 再開啟本機 `http://localhost:8788`。不需把無登入功能的 UI port 公開到網際網路。Git 同步、資料搬移與遠端部署是三個獨立步驟。
+
+## 共用 2 核心／2 GB VPS 的資源設定
+
+兩份 Compose 都提供以下環境變數（只啟動需要的 UI 或 CLI 服務）：
+
+| `.env` 變數 | 預設值 | 用途 |
+| --- | --- | --- |
+| `TICKET_WATCHER_CPUS` | `0.50` | 單一容器 CPU 上限 |
+| `TICKET_WATCHER_MEMORY` | `256m` | 單一容器記憶體上限 |
+| `TICKET_WATCHER_PIDS` | `64` | 程序／執行緒數量上限 |
+
+這些值是起始限制，不代表已在你的 VPS 驗證容量。部署後使用 `docker stats --no-stream` 觀察，再按目標數與其他服務用量調整；超出記憶體限制可能被終止並由重啟政策恢復。健康檢查已改為唯讀 SQLite，不建立完整監控程序或 HTTP client。UI 每 30 秒更新目前頁面，隱藏分頁不做定時更新。
+
+依據：[Docker Compose 資源限制](https://docs.docker.com/reference/compose-file/services/#cpus)。
 
 依據：[Docker 容器複製](https://docs.docker.com/reference/cli/docker/container/cp/)、[Docker volume 備份與搬移](https://docs.docker.com/engine/storage/volumes/#back-up-restore-or-migrate-data-volumes)。

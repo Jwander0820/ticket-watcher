@@ -54,6 +54,10 @@ UI 儲存會自動重新載入監控設定，保留既有票況、排程與平�
 
 預設建立 `data/ui-config.yaml` 與同目錄資料庫。UI 程序已包含常駐監控，不需另外執行 `run`，也不要讓 UI 與其他 `run` 程序同時管理同一份設定／資料庫。手動在外部修改設定檔後需重啟 UI。停止 Docker UI 可執行 `docker compose -f compose.ui.yaml down`，資料 volume 會保留。
 
+控制台每 30 秒更新目前頁面，內容未變更時不重畫清單或表單；分頁隱藏時停止定時更新，切回時立即更新。事件與查詢日誌只在對應頁面載入，切換頁面和手動操作會即時刷新。查票排程獨立運作，不受瀏覽器是否開啟影響。
+
+透過 Cloudflare Tunnel + Access 私下使用時，在 `.env` 設定 `TICKET_WATCHER_PUBLIC_ORIGIN=https://tickets.example.com`（替換為自己的網域），或使用 `ui --public-origin`。預設留空僅接受本機 Host；公開 origin 只調整 Host／Origin 白名單，登入與 JWT 驗證由 Access／cloudflared 負責。完整設定與搬移步驟見 [VPS 部署說明](docs/vps-migration.md)。
+
 ### 演出開始後自動停止
 
 每個監控預設開啟「演出開始後自動停止監控」（YAML：`auto_stop: true`）。首次監控觀測取得 TicketPlus 場次日期與時間後，以台灣時區解析演出開始時間，並將停止期限存入 SQLite。重啟後仍會遵守期限，不需要修改 YAML 的 `enabled`。
@@ -93,6 +97,8 @@ UI 的「查詢紀錄」顯示最近 100 筆檢測：時間、目標、手動／
 複製 `config.example.yaml` 為 `config.yaml`，填入 URL，將目標改成 `enabled: true`。`activity` URL 監控場次外頁；`order` URL 自動使用該場的票區或票種來源。`session_ids` 可填 API 的 `s000001778` 或公開場次 ID；空陣列代表所有公開場次，購票 URL 已限定一場。
 
 `order` URL 可透過 `item_ids` 篩選 `a000...` 票區或 `p000...` 票種；空陣列代表該場全部公開項目。`activity` URL 不接受 `item_ids`，避免暗中忽略票區篩選。只有外頁網址時，先用 `query --detail full` 取得每場的 `order_url`。公開 API 可以取得售完場次的內頁資料，無須先點入網站或登入。
+
+指定票區／票種時，先以完整靜態清單驗證 ID，再只查選定項目的動態票況；未指定時仍查全部公開項目。輸出 `limit`／`offset` 不會縮減實際評估的項目，選定項目的缺失資料仍視為未知或解析失敗。
 
 YUURI 外頁與 10/9、10/10 內頁的設定已放在 [案例設定](examples/ticketplus-cases.yaml)，預設全部關閉。查詢結果與操作範例見 [案例實測](docs/ticketplus-cases.md)。內頁只回報票區／票種名稱，不取得逐席位置。
 
@@ -147,7 +153,11 @@ docker compose exec ticket-watcher ticket-watcher --config /app/config.yaml stat
 
 Compose 使用 named volume 保存 SQLite，不開入站 port，設定唯讀掛載，日誌自動輪替。範例的 `data/watcher.db` 會相對於容器內 `/app/config.yaml` 解析成 `/app/data/watcher.db`，也可直接設定該絕對路徑。`docker compose exec` 與常駐程序會讀取同一份資料庫。宿主機 CLI 必須透過容器執行才能共用該狀態；另一台電腦的獨立 SQLite 不會自動同步。
 
-`health` 只讀本機資料，回報程序 heartbeat 與各目標最近成功查詢的時間；`run`／`tick` 執行期間每 30 秒獨立更新 heartbeat，長查詢或通知等待不會讓它停止更新。平台被限制時不因此將 heartbeat 判為失敗。初始化活動查詢需三個 HTTP 請求，內頁通常需四個；超過 100 個內頁項目時分批完整查詢。健康檢查有 60 秒啟動緩衝。
+`health` 透過 SQLite 唯讀連線回報程序 heartbeat 與各目標最近成功查詢的時間，不建立 Watcher、HTTP client、資料庫或執行 schema 遷移；資料庫不存在、版本不支援或 heartbeat 過期時回傳非零 exit code。`run`／`tick` 執行期間每 30 秒獨立更新 heartbeat，長查詢或通知等待不會讓它停止更新。平台被限制時不因此將 heartbeat 判為失敗。初始化活動查詢需三個 HTTP 請求，內頁通常需四個；超過 100 個選定內頁項目時分批完整查詢。CLI Compose 健康檢查有 60 秒啟動緩衝，UI Compose 為 30 秒。
+
+兩份 Compose 預設限制單一容器使用 0.5 CPU、256 MiB 記憶體及 64 個程序／執行緒，可透過 `.env.example` 的 `TICKET_WATCHER_CPUS`、`TICKET_WATCHER_MEMORY`、`TICKET_WATCHER_PIDS` 調整。這是共用 VPS 的起始上限，部署後仍需觀察實際用量。
+
+外部 HTTP 回應以串流方式讀取；TicketPlus 的傳輸與解壓後資料各限 5,000,000 bytes，Discord ACK 各限 65,536 bytes。支援 gzip／deflate 並限制解壓輸出，超限即停止讀取。整段回應仍受原有總逾時限制；429 的 `Retry-After` 不會因回應過大或逾時而丟失。
 
 ## JSON 與 Python 使用
 
