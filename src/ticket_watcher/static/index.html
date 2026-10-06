@@ -25,7 +25,8 @@
     <div class="side-foot"><span class="local-dot"></span> 本機控制台<p>查票與通知，不自動購票。</p></div>
   </aside>
   <main id="main">
-    <header class="topbar"><span class="eyebrow">TICKETPLUS / MONITOR</span><span id="service-state" class="service-state">連線中…</span></header>
+    <header class="topbar"><span class="eyebrow">TICKETPLUS / MONITOR</span><div class="service-controls"><span id="service-state" class="service-state">連線中…</span><button type="button" id="service-toggle" class="secondary" data-action="pause-service" disabled>暫停運作</button></div></header>
+    <div id="service-paused" class="banner pause-banner" hidden><strong>此服務已暫停</strong><p>自動查票、Discord 通知及手動對外操作均已停止。仍可編輯設定；儲存或重啟不會自動恢復。僅影響目前這個服務。</p></div>
     <div id="global-error" class="banner error" role="alert" hidden></div>
     <div id="platform-warning" class="banner" hidden></div>
     <section id="targets-view" class="view" aria-labelledby="targets-heading">

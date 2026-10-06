@@ -4,7 +4,7 @@ const esc = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => ({"&":"
 const ticketLabels = {AVAILABLE:"有票", SOLD_OUT:"售完", UNKNOWN:"未知", UPCOMING:"尚未開賣", TEMPORARILY_UNAVAILABLE:"暫無票券・線索", PAUSED:"停售", ENDED:"已結束"};
 const noticeLabels = {PENDING:"待送", INFLIGHT:"傳送中", SENT:"已送達", CANCELLED:"已取消", EXPIRED:"已過期", FAILED:"傳送失敗", DISABLED:"不通知", NOT_REQUIRED:"不需通知"};
 const eventLabels = {RELEASE:"偵測到可購票", RELEASE_HINT:"發現釋票線索", SYSTEM:"系統通知", ERROR:"查詢異常", STATE_CHANGE:"票況變化"};
-let state = null, view = "targets", settingsDirty = false, refreshing = false, refreshAgain = false, toastTimer;
+let state = null, view = "targets", settingsDirty = false, refreshing = false, refreshAgain = false, serviceChanging = false, toastTimer;
 const checking = new Set();
 const renderedViews = new Map();
 function renderChanged(name, value, draw) {
@@ -36,8 +36,8 @@ function renderTargets() {
   const enabled = state.targets.filter((t) => t.enabled && !isStopped(t)).length;
   $("#overview").innerHTML = `<div class="metric"><span>啟用監控</span><strong>${enabled}</strong><small>個目標</small></div><div class="metric"><span>全部場次</span><strong>${state.targets.length}</strong><small>個目標</small></div><div class="metric"><span>等待通知</span><strong>${state.health.pending_notifications ?? "—"}</strong><small>筆事件</small></div>`;
   $("#target-list").innerHTML = state.targets.length ? state.targets.map((t) => {
-    const s = t.state, stopped = isStopped(t), on = t.enabled && !stopped;
-    const label = !t.enabled ? "已停用" : stopped ? (s.auto_stop_at === effectiveStop(t) ? "已停止" : "已到期") : s.paused_reason ? "已暫停" : "監控中";
+    const s = t.state, stopped = isStopped(t), on = t.enabled && !stopped && !state.ui_paused;
+    const label = !t.enabled ? "已停用" : stopped ? (s.auto_stop_at === effectiveStop(t) ? "已停止" : "已到期") : state.ui_paused ? "服務暫停" : s.paused_reason ? "已暫停" : "監控中";
     const summary = Object.entries(s.summary || {}).map(([status,count]) => badge(status, `${ticketLabels[status] || status} ${count}`)).join("") || badge("UNKNOWN","尚未查詢");
     const unknown = (s.current_observation?.UNKNOWN || 0) > 0;
     const stopText = effectiveStop(t) ? dateText(effectiveStop(t)) : t.auto_stop ? "待取得可靠場次時間" : "未設定";
@@ -48,7 +48,7 @@ function renderChannels() {
   $("#channel-list").innerHTML = state.channels.map((c) => {
     const isDefault = c.id === "default";
     const description = isDefault ? c.source === "ui" ? "使用 UI 儲存的 Webhook；清除後改用環境變數（若有設定）。" : "可直接編輯 Webhook。目前沿用環境變數（若有設定）。" : "Webhook 網址已遮蔽；頻道是否可送達，請傳送測試確認。";
-    return `<article class="channel-card"><div><h2># ${esc(c.name)} ${badge(c.configured ? "AVAILABLE" : "UNKNOWN", c.configured ? "已設定" : "未設定")}</h2><p>${description}</p></div><div class="channel-actions"><button class="quiet" data-action="edit-channel" data-id="${c.id}" aria-label="編輯${esc(c.name)}">編輯</button><button class="secondary" data-action="test-channel" data-id="${c.id}" ${!c.configured ? "disabled" : ""}>傳送測試</button>${!isDefault ? `<button class="quiet danger" data-action="delete-channel" data-id="${c.id}">刪除</button>` : c.source === "ui" ? '<button class="quiet" data-action="clear-default" data-id="default">清除 UI 設定</button>' : ""}</div></article>`;
+    return `<article class="channel-card"><div><h2># ${esc(c.name)} ${badge(c.configured ? "AVAILABLE" : "UNKNOWN", c.configured ? "已設定" : "未設定")}</h2><p>${description}</p></div><div class="channel-actions"><button class="quiet" data-action="edit-channel" data-id="${c.id}" aria-label="編輯${esc(c.name)}">編輯</button><button class="secondary" data-action="test-channel" data-id="${c.id}" ${!c.configured || state.ui_paused ? "disabled" : ""}>傳送測試</button>${!isDefault ? `<button class="quiet danger" data-action="delete-channel" data-id="${c.id}">刪除</button>` : c.source === "ui" ? '<button class="quiet" data-action="clear-default" data-id="default">清除 UI 設定</button>' : ""}</div></article>`;
   }).join("");
 }
 function renderEvents() {
@@ -79,23 +79,31 @@ function fillSettings() {
   form.dataset.revision = state.revision;
 }
 function render() {
-  $("#service-state").textContent = state.runner_error ? "監控自動恢復中" : state.runner_active ? "● 監控服務運作中" : "服務待命";
+  $("#service-state").textContent = state.ui_paused ? "Ⅱ 此服務已暫停" : state.runner_error ? "監控自動恢復中" : state.runner_active ? "● 監控服務運作中" : "服務待命";
+  $("#service-state").classList.toggle("paused", state.ui_paused);
+  $("#service-paused").hidden = !state.ui_paused;
+  const serviceButton = $("#service-toggle");
+  serviceButton.dataset.action = state.ui_paused ? "resume-service" : "pause-service";
+  serviceButton.textContent = serviceChanging ? "切換中…" : state.ui_paused ? "恢復運作" : "暫停運作";
+  serviceButton.className = state.ui_paused ? "primary" : "secondary";
+  serviceButton.disabled = serviceChanging;
   const warning = state.runner_error || (state.external_changes ? "設定檔已在外部變更，請重啟 UI 以載入。" : "");
   $("#global-error").textContent = warning; $("#global-error").hidden = !warning;
   $("#platform-warning").hidden = !state.health.platform_paused;
   $("#platform-warning").innerHTML = state.health.platform_paused ? `TicketPlus 平台已暫停查詢。確認存取問題處理完成後，再解除暫停。<button class="secondary" data-action="resume-platform">解除平台暫停</button>` : "";
   if (view === "targets") {
-    renderChanged(view, [state.targets, state.channels, state.health.pending_notifications, state.targets.map(isStopped)], renderTargets);
+    renderChanged(view, [state.targets, state.channels, state.health.pending_notifications, state.targets.map(isStopped), state.ui_paused], renderTargets);
     document.querySelectorAll('[data-action="check"]').forEach((button) => {
       const target = state.targets.find((item) => item.id === button.dataset.id), busy = checking.has(button.dataset.id);
-      button.disabled = busy || !target.enabled || isStopped(target);
+      button.disabled = busy || state.ui_paused || !target.enabled || isStopped(target);
       const label = busy ? "查詢中…" : "查詢一次";
       if (button.textContent !== label) button.textContent = label;
     });
-  } else if (view === "channels") renderChanged(view, state.channels, renderChannels);
+  } else if (view === "channels") renderChanged(view, [state.channels, state.ui_paused], renderChannels);
   else if (view === "events" && state.events) renderChanged(view, [state.events, state.targets], renderEvents);
   else if (view === "logs" && state.query_logs) renderChanged(view, [state.query_logs, state.targets], renderQueryLogs);
   else if (view === "settings" && !settingsDirty) renderChanged(view, [state.settings, state.channels, state.revision], fillSettings);
+  document.querySelectorAll('[data-action="resume"], [data-action="resume-platform"]').forEach((button) => { button.disabled = state.ui_paused; });
   $("#last-refresh").textContent = `上次更新 ${new Date().toLocaleTimeString("zh-TW",{hour12:false})} · 每 30 秒更新狀態`;
 }
 async function refresh() {
@@ -164,6 +172,14 @@ async function action(button) {
   if (kind === "add-channel" || kind === "edit-channel") return openChannel(id);
   if (kind === "refresh") return refresh();
   const revision = state.revision;
+  if (kind === "pause-service" || kind === "resume-service") {
+    serviceChanging = true; render();
+    try {
+      state = await api(`/api/actions/${kind}`, {method:"POST", body:{revision}});
+      toast(state.ui_paused ? "此服務已暫停，設定與紀錄保留。" : "已恢復運作，將依排程查票與處理通知。");
+    } finally { serviceChanging = false; render(); }
+    return;
+  }
   if (kind === "clear-default") {
     if (!await confirmAction("清除 UI 儲存的預設 Webhook？之後會沿用環境變數；若環境變數也未設定，預設頻道將無法送出通知。", "清除設定")) return;
     state = await api("/api/channels/default", {method:"DELETE",body:{revision}}); render(); toast("已清除 UI 預設頻道設定"); return;
@@ -196,7 +212,8 @@ document.addEventListener("click", async (event) => {
   button.disabled = true;
   try { await action(button); } catch (error) { toast(error.message); } finally {
     button.disabled = false;
-    if (checkingId) { checking.delete(checkingId); render(); }
+    if (checkingId) checking.delete(checkingId);
+    render();
   }
 });
 $("#reveal-webhook").addEventListener("click", () => {

@@ -78,6 +78,7 @@ class Config:
     retention_days: int = 30
     targets: tuple[Target, ...] = field(default_factory=tuple)
     channels: tuple[Channel, ...] = field(default_factory=tuple)
+    ui_paused: bool = False
 
     @property
     def secrets_path(self) -> Path:
@@ -136,7 +137,9 @@ def parse_config(data: dict, directory: Path) -> Config:
         "channels",
     }:
         raise ValueError("設定檔結構不正確")
-    app = _section(data, "app", {"timezone", "database_path", "log_level", "retention_days"})
+    app = _section(
+        data, "app", {"timezone", "database_path", "log_level", "retention_days", "ui_paused"}
+    )
     polling = _section(
         data,
         "polling",
@@ -278,4 +281,5 @@ def parse_config(data: dict, directory: Path) -> Config:
         retention_days=_int(app.get("retention_days", 30)),
         targets=tuple(targets),
         channels=tuple(channels),
+        ui_paused=_bool(app.get("ui_paused", False)),
     )

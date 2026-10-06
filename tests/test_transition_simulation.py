@@ -34,8 +34,7 @@ def test_real_parser_transition_simulation(harness, monkeypatch, outer, via_unav
 
     transport = SimulationTransport(h, SALE)
     product = next(
-        row for row in transport.case["live"]["s000002256"]["product"]
-        if row["id"] == "p000017500"
+        row for row in transport.case["live"]["s000002256"]["product"] if row["id"] == "p000017500"
     )
     h["watcher"].adapter = TicketPlusAdapter(transport)
     enable(h, monkeypatch)

@@ -26,7 +26,7 @@ docker compose -f compose.ui.yaml up -d --build
 2. 新增監控，填入 TicketPlus 的 `activity` 或 `order` 網址。
 3. 確認篩選與停止條件後，勾選「儲存後啟用監控」。新監控預設停用。
 
-控制台已包含常駐監控，關閉瀏覽器不會停止查票。停止服務可執行下列命令，資料 volume 會保留：
+控制台已包含常駐監控，關閉瀏覽器不會停止查票。頂端「暫停運作」可停止此服務的查票與通知，保留 UI 編輯設定；暫停狀態在儲存設定及重啟後仍保留，按「恢復運作」才繼續。不需要 UI 時，停止服務可執行下列命令，資料 volume 會保留：
 
 ```sh
 docker compose -f compose.ui.yaml down

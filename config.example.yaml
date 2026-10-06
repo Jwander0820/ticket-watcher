@@ -2,6 +2,7 @@ app:
   timezone: Asia/Taipei
   database_path: data/watcher.db
   retention_days: 30
+  ui_paused: false # 僅控制 UI 程序；true 時保留介面並暫停查票與通知
 
 polling:
   normal_interval_seconds: [300, 900]

@@ -141,7 +141,9 @@ class Controller:
                     self.retry_at = None
                     self.runner_error = "監控已重新啟動，正在確認穩定運作。"
                     self._worker_event(incident + "-failed", WORKER_FAILURE_MESSAGE)
-                worker = asyncio.create_task(self.watcher.run())
+                worker = asyncio.create_task(
+                    self._standby() if self.config.ui_paused else self.watcher.run()
+                )
                 try:
                     done, _ = await asyncio.wait({worker}, timeout=WORKER_STABLE_SECONDS)
                     if not done and incident:
@@ -191,8 +193,15 @@ class Controller:
                     asyncio.sleep(delay), self._deliver_worker_event(event_id, min(delay, 10))
                 )
 
+    async def _standby(self):
+        # Keep the local process health check alive without polling, delivery,
+        # maintenance or notification retries while explicitly paused.
+        while True:
+            self.watcher.store.heartbeat(self.watcher.clock())
+            await asyncio.sleep(30)
+
     def _worker_event(self, event_id, message):
-        if self.watcher is None:
+        if self.watcher is None or self.config.ui_paused:
             return
         try:
             with self.watcher.store.transaction() as db:
@@ -213,7 +222,7 @@ class Controller:
             log.error("ui_worker_event_failed type=%s", type(error).__name__)
 
     async def _deliver_worker_event(self, event_id, timeout):
-        if self.watcher is None:
+        if self.watcher is None or self.config.ui_paused:
             return
         try:
             async with asyncio.timeout(timeout):
@@ -352,7 +361,10 @@ class Controller:
                 "pending_notifications": None,
                 "observations": [],
             },
-            "runner_active": self.task is not None and not self.task.done(),
+            "ui_paused": self.config.ui_paused,
+            "runner_active": (
+                not self.config.ui_paused and self.task is not None and not self.task.done()
+            ),
             "runner_error": self.runner_error,
             "worker_recovery": {"restart_count": self.restart_count, "retry_at": self.retry_at},
             "external_changes": self.disk_revision() != self.revision,
@@ -546,9 +558,20 @@ async def action(request):
         raise ValueError
     async with c.lock:
         c.require_revision(body.get("revision"))
+        kind = request.match_info["action"]
+        if kind in {"pause-service", "resume-service"}:
+            paused = kind == "pause-service"
+            if paused != c.config.ui_paused:
+                document = copy.deepcopy(c.document)
+                document.setdefault("app", {})["ui_paused"] = paused
+                # save drains the supervisor AND borrowed manual tasks before
+                # closing their resources; the new worker reads the saved mode.
+                await c.save(document, read_webhooks(c.config.secrets_path))
+            return web.json_response(c.state())
+        if c.config.ui_paused:
+            raise Conflict("此服務已暫停，請先恢復運作後再查票或傳送通知。")
         if c.watcher is None:
             raise Conflict("監控正在重新啟動，請稍後再試。")
-        kind = request.match_info["action"]
         if kind == "test-channel":
             ident = body.get("channel_id")
             if ident not in channel_urls(c.config):
