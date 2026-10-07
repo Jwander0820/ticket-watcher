@@ -99,11 +99,18 @@ class Watcher:
         self._delivery_waiters = set()
         self.query_log = QueryLog(self.store, config.database_path, clock)
         self._owns_client = client is None
+        mounts = {}
+        if self._owns_client and config.ticketplus_proxy:
+            # Only the public TicketPlus API uses WARP. Discord stays direct.
+            mounts["https://apis.ticketplus.com.tw"] = httpx.AsyncHTTPTransport(
+                proxy=config.ticketplus_proxy, trust_env=False
+            )
         self.client = client or httpx.AsyncClient(
             timeout=config.timeout,
             follow_redirects=False,
             trust_env=False,
             headers={"User-Agent": f"TicketWatcher/{__version__}"},
+            mounts=mounts,
         )
         self.transport = PublicTransport(self.client, self.store, config, clock)
         self.adapter = adapter or TicketPlusAdapter(self.transport)

@@ -1,5 +1,6 @@
 import hashlib
 import json
+import os
 import re
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -8,6 +9,42 @@ from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
 import yaml
+
+
+def validate_ticketplus_proxy(value: str) -> str:
+    error = "TICKET_WATCHER_TICKETPLUS_PROXY 必須是有效的 http:// 或 https:// 代理端點"
+    if not isinstance(value, str):
+        raise ValueError(error)
+    if not value:
+        return ""
+    try:
+        parts = urlsplit(value)
+        valid = (
+            parts.scheme in {"http", "https"}
+            and bool(parts.hostname)
+            and parts.port != 0
+            and parts.path in {"", "/"}
+            and not parts.query
+            and not parts.fragment
+            and not any(
+                character.isspace() or ord(character) < 32 or ord(character) == 127
+                for character in value
+            )
+            and "?" not in value
+            and "#" not in value
+            and not parts.netloc.endswith(":")
+            and "\\" not in value
+        )
+    except ValueError:
+        valid = False
+    if not valid:
+        # Configuration errors must never echo proxy credentials.
+        raise ValueError(error)
+    return value
+
+
+def _ticketplus_proxy_from_env() -> str:
+    return os.environ.get("TICKET_WATCHER_TICKETPLUS_PROXY", "")
 
 
 def validate_url(url: str) -> str:
@@ -79,6 +116,10 @@ class Config:
     targets: tuple[Target, ...] = field(default_factory=tuple)
     channels: tuple[Channel, ...] = field(default_factory=tuple)
     ui_paused: bool = False
+    ticketplus_proxy: str = field(default_factory=_ticketplus_proxy_from_env, repr=False)
+
+    def __post_init__(self):
+        validate_ticketplus_proxy(self.ticketplus_proxy)
 
     @property
     def secrets_path(self) -> Path:

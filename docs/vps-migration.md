@@ -4,6 +4,8 @@
 
 正式部署前先參考 [VPS 上線準備與 DNS 設計](vps-launch-plan.md)，確認入口名稱、Tunnel 拓撲、Access 與切換驗收。
 
+VPS 查票需要指定 Cloudflare WARP 出口時，依 [WARP 查票出口](warp-proxy.md) 設定；只有 TicketPlus API 使用代理，控制台入口與 Discord 維持原本連線。
+
 ## 選擇執行方式
 
 兩份 Compose 使用同一套程式，但管理方式與資料 volume 不同。只啟動需要的服務，避免重複監控相同目標。

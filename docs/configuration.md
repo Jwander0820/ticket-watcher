@@ -104,3 +104,5 @@ $env:DISCORD_WEBHOOK_URL = '<指定頻道的 Webhook URL>'
 Linux 對應為 `export DISCORD_WEBHOOK_URL='<指定頻道的 Webhook URL>'`。CLI 不自動載入 `.env`；Docker Compose 使用 [.env.example](../.env.example) 複製出的 `.env` 注入環境。UI 儲存的預設 Webhook 優先於環境值，清除 UI 覆寫才恢復環境值。
 
 Compose 的 `TICKET_WATCHER_PUBLIC_ORIGIN` 與容器資源變數見 [部署指南](vps-migration.md)。完整 YAML 以 [設定範本](../config.example.yaml) 為起點；不支援的欄位會在載入時報錯。
+
+`TICKET_WATCHER_TICKETPLUS_PROXY` 可指定 TicketPlus 專用 HTTP 代理，留空維持直連；Discord 不使用此代理。VPS WARP 接入與本機測試見 [WARP 查票出口](warp-proxy.md)。此設定由程序環境讀取，變更後需重啟程序或重建容器。

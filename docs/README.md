@@ -15,6 +15,7 @@
 | [部署與 VPS 搬移](vps-migration.md) | UI／CLI Compose、備份還原、Tunnel／SSH、資源上限 |
 | [VPS 上線準備](vps-launch-plan.md) | DNS、PORT、Access／Tunnel、GitHub 自動更新、驗收與回復 |
 | [VPS 初次設定](vps-setup.md) | 空白控制台、部署金鑰、GitHub Secrets、GHCR 與上線操作 |
+| [WARP 查票出口](warp-proxy.md) | TicketPlus 專用代理、本機測試、VPS 內部轉接與回復 |
 
 ## 開發與介面參考
 

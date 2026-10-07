@@ -1,0 +1,26 @@
+[Unit]
+Description=Ticket Watcher private bridge to Cloudflare WARP proxy
+Wants=docker.service warp-svc.service
+After=docker.service warp-svc.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=ticket-watcher-warp
+DynamicUser=true
+EnvironmentFile=/etc/ticket-watcher-warp-relay.env
+ExecStart=/usr/bin/socat -T 60 TCP4-LISTEN:40001,bind=${WARP_RELAY_BIND},range=${WARP_RELAY_SOURCE},reuseaddr,fork,max-children=16 TCP4:127.0.0.1:40000
+Restart=always
+RestartSec=5
+TimeoutStopSec=10
+NoNewPrivileges=true
+CapabilityBoundingSet=
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+RestrictAddressFamilies=AF_INET AF_UNIX
+MemoryMax=32M
+TasksMax=32
+
+[Install]
+WantedBy=multi-user.target

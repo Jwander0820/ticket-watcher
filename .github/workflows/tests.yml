@@ -37,6 +37,7 @@ jobs:
         run: |
           bash -n scripts/deploy-vps.sh
           bash -n scripts/install-vps-deploy.sh
+          bash -n scripts/install-vps-warp.sh
       - name: Build and smoke test Linux amd64 image
         run: |
           docker build --platform linux/amd64 \

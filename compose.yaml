@@ -8,6 +8,9 @@ services:
     pids_limit: ${TICKET_WATCHER_PIDS:-64}
     environment:
       DISCORD_WEBHOOK_URL: ${DISCORD_WEBHOOK_URL:-}
+      TICKET_WATCHER_TICKETPLUS_PROXY: ${TICKET_WATCHER_TICKETPLUS_PROXY:-}
+    extra_hosts:
+      - "host.docker.internal:${TICKET_WATCHER_WARP_HOST:-host-gateway}"
     volumes:
       - ./config.yaml:/app/config.yaml:ro
       - watcher-data:/app/data

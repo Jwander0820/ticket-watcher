@@ -13,6 +13,9 @@ services:
     environment:
       DISCORD_WEBHOOK_URL: ${DISCORD_WEBHOOK_URL:-}
       TICKET_WATCHER_PUBLIC_ORIGIN: ${TICKET_WATCHER_PUBLIC_ORIGIN:-}
+      TICKET_WATCHER_TICKETPLUS_PROXY: ${TICKET_WATCHER_TICKETPLUS_PROXY:-}
+    extra_hosts:
+      - "host.docker.internal:${TICKET_WATCHER_WARP_HOST:-host-gateway}"
     ports:
       - "127.0.0.1:8787:8787"
     volumes:
