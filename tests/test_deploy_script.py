@@ -39,19 +39,30 @@ docker() {
         image)
             if [[ "$FAILURE" == revision ]]; then printf 'wrong\n'; else printf '%s\n' "$SHA"; fi ;;
         compose)
+            [[ "$FAILURE" != stop || " $* " != *' stop '* ]] || return 1
             if [[ " $* " == *' up '* ]]; then
                 printf '%s\n' "$TICKET_WATCHER_IMAGE" >> "$CASE_DIR/images"
+                local count=0
+                [[ ! -f "$CASE_DIR/up-count" ]] || read -r count < "$CASE_DIR/up-count"
+                count=$((count + 1))
+                printf '%s\n' "$count" > "$CASE_DIR/up-count"
+                [[ "$FAILURE" != resumed || "$count" != 2 ]] || return 1
                 [[ "$FAILURE" != health || "$TICKET_WATCHER_IMAGE" == old-image-id ]]
             fi ;;
         *) return 99 ;;
     esac
 }
 helper() {
-    printf 'helper %s %s\n' "$1" "$2" >> "$CASE_DIR/calls"
+    printf 'helper %s\n' "$*" >> "$CASE_DIR/calls"
     case "$2" in
         schema) printf '%064d\n' 0 ;;
-        verify) [[ "$FAILURE" != schema ]] ;;
-        prepare) touch "$BACKUP/metadata.json" ;;
+        verify)
+            [[ "$FAILURE" != schema ]] || return 1
+            [[ "$FAILURE" != migration || " $* " == *' --allow-migration '* ]] ;;
+        prepare)
+            [[ "$FAILURE" != migration || " $* " == *' --allow-migration '* ]] || return 1
+            touch "$BACKUP/metadata.json" ;;
+        rollback-migration) [[ "$FAILURE" != resumed ]] ;;
         resume) return 0 ;;
     esac
 }
@@ -123,6 +134,33 @@ def test_failed_health_rolls_back_without_restoring_database(tmp_path):
     assert "helper old-image-id verify" in calls
     assert "helper old-image-id resume" in calls
     assert "restore" not in calls
+
+
+def test_known_migration_rehearsal_precedes_stop_and_requires_backup(tmp_path):
+    result, calls, _ = run_case(tmp_path, f"deploy 1 {SHA} {DIGEST}", "migration")
+    assert result.returncode == 0, result.stderr
+    lines = calls.splitlines()
+    verify = next(i for i, line in enumerate(lines) if " verify " in line)
+    stop = next(i for i, line in enumerate(lines) if " stop " in line)
+    assert verify < stop
+    assert "--allow-migration" in lines[verify]
+    assert " prepare " in calls and "--allow-migration" in calls.split(" prepare ")[1]
+
+
+def test_failed_stop_does_not_restore_or_modify_live_database(tmp_path):
+    result, calls, images = run_case(tmp_path, f"deploy 1 {SHA} {DIGEST}", "stop")
+    assert result.returncode != 0
+    assert " rollback-migration" not in calls and " prepare" not in calls
+    assert not images
+
+
+def test_migration_rollback_after_resume_leaves_history_untouched(tmp_path):
+    result, calls, images = run_case(tmp_path, f"deploy 1 {SHA} {DIGEST}", "resumed")
+    assert result.returncode != 0
+    assert " rollback-migration" in calls
+    assert "helper old-image-id verify" not in calls
+    assert "old-image-id" not in images
+    assert "Automatic recovery stopped" in result.stderr
 
 
 def validate_inputs(**changes):

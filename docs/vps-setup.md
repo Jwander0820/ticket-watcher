@@ -116,7 +116,7 @@ sudo docker exec ticket-watcher-ticket-watcher-ui-1 ticket-watcher --config /app
 
 自己的瀏覽器開啟 `https://tickets.jwander.net`：確認 Access 登入後可讀寫，未登入與非允許帳號讀不到 `/api/state`。在控制台設定 Discord、新增監控，確認目標後按「恢復運作」。保留全域暫停時不能送測試通知，需恢復後才測試 Discord。
 
-未來推送 main 會自動更新；UI 資料保存於固定 `ticket-watcher-ui-data` volume，不會被 checkout 或映像更新覆蓋。部署前停止 UI 並備份全部資料，更新先暫停驗收，再恢復原本的 paused 狀態。每次部署會有短暫查票中斷。
+未來推送 main 會自動更新；UI 資料保存於固定 `ticket-watcher-ui-data` volume，不會被 checkout 或映像更新覆蓋。部署先在 SQLite 副本演練已知升級，再停止 UI 並備份全部資料，離線更新後先暫停驗收，再恢復原本的 paused 狀態。每次部署會有短暫查票中斷。
 
 ## 常用維運
 
@@ -131,9 +131,11 @@ sudo /usr/local/sbin/ticket-watcher-deploy check
 
 部署工作由 VPS systemd 管理，SSH 中斷不會取消它；GitHub 工作失敗需檢查 VPS 的最終狀態再重跑。同一 workflow 的過時 run 會略過，VPS 鎖防止與人工操作同時部署。
 
-更新失敗時，先停止候選容器；資料庫 schema 仍相容才恢復前一映像，保留目前 DB，避免倒退通知紀錄。結構變更一律擋在自動部署之前，改用維護窗口與備份做人工遷移。首次部署失敗若沒有舊版則保持停止，不假裝成功。
+更新失敗時，先確認候選容器已停止；一般更新保留目前 DB，只在結構相容時恢復前一映像。已知的第 2 → 3 版升級先比對完整結構、在副本檢查完整性及所有資料，再備份並離線升級。只有尚未恢復監控的失敗可還原升級前 DB 及設定；一旦可能恢復監控，就拒絕倒退通知紀錄，保持停止並要求人工處理。未知結構與其他版本變更在停機前拒絕。首次部署失敗若沒有舊版則保持停止，不假裝成功。
 
-每次更新的私有備份位於 `/opt/ticket-watcher/backups`，包含 Webhook。此版本不會自動刪除備份；需安排加密異機備份並按保留政策清理，避免磁碟持續增長。`.env` 另行備份。installer 或 Compose 本身有改動時，要在維護窗口重新安裝；平常自動更新只更新應用映像，不給 CI 修改 root 部署入口的權限。
+每次更新的私有備份位於 `/opt/ticket-watcher/backups`，包含 Webhook。此版本不會自動刪除備份；需安排加密異機備份並按保留政策清理，避免磁碟持續增長。`.env` 另行備份。installer、部署腳本或 Compose 本身有改動時，要重新執行 `sudo bash scripts/install-vps-deploy.sh` 安裝 root 管理的入口；此操作不會停止服務或改寫既有 `.env`。本次自動升級流程也需要先完成這一次入口更新；平常自動更新只更新應用映像，不給 CI 修改 root 部署入口的權限。
+
+Actions 固定使用 `ubuntu-24.04`，避免 `ubuntu-latest` 遷移改變部署環境。映像發布前會在無網路、唯讀檔案系統及正式資源限制的容器中驗證升級、檔案擁有者與回復流程。日誌會區分 `SCHEMA_MIGRATION_REQUIRED`、`SCHEMA_MIGRATION_UNSUPPORTED`、`MIGRATION_READY` 與 `MIGRATION_ROLLBACK_BLOCKED`，不輸出私人設定或資料列。
 
 2026-10-06 本機驗證：全專案 294 項測試、Ruff、Bash 語法與 Compose 設定通過；17 項部署測試涵蓋命令拒絕、鎖、過時版本、預檢、失敗回復與資料暫停／恢復。測試映像建置成功，無網路臨時容器驗證 UID 10001 的空白 UI、首頁、暫停狀態與 heartbeat。沒有掛載正式資料或發送通知。
 

@@ -4,7 +4,7 @@ permissions:
   contents: read
 jobs:
   python:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       matrix:
         python-version: ['3.12', '3.13', '3.14']
@@ -20,7 +20,7 @@ jobs:
   publish:
     needs: python
     if: github.event_name == 'push' && github.ref == 'refs/heads/main' && github.repository == 'Jwander0820/ticket-watcher'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
       contents: read
@@ -44,6 +44,16 @@ jobs:
             --label "org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY" \
             --label "org.opencontainers.image.revision=$GITHUB_SHA" -t "$IMAGE" .
           docker run --rm --network none "$IMAGE" capabilities --json
+      - name: Verify deployment migration in the built image
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Run isolated migration and rollback smoke
+        env:
+          TICKET_WATCHER_DEPLOY_TEST_IMAGE: ${{ env.IMAGE }}
+        run: |
+          python -m pip install '.[dev]'
+          pytest -q tests/test_deploy_container.py
       - name: Publish tested image
         id: publish
         env:
@@ -63,7 +73,7 @@ jobs:
     needs: publish
     if: vars.VPS_DEPLOY_ENABLED == 'true'
     environment: production
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     concurrency:
       group: ticket-watcher-production

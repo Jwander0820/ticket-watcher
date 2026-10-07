@@ -22,10 +22,12 @@ compose() {
 helper() {
     local image=$1 operation=$2
     shift 2
+    local mount_mode=rw
+    [[ "$operation" != schema && "$operation" != verify ]] || mount_mode=ro
     docker run --rm --network none --read-only --tmpfs /tmp --user 0 \
         --cap-drop ALL --cap-add CHOWN --cap-add DAC_OVERRIDE --security-opt no-new-privileges:true \
         --memory 256m --pids-limit 64 \
-        -v "$VOLUME:/app/data" -v "$BACKUP:/backup" \
+        -v "$VOLUME:/app/data:$mount_mode" -v "$BACKUP:/backup:$mount_mode" \
         -v "$APP_DIR/deploy_state.py:/deploy_state.py:ro" \
         --entrypoint python "$image" /deploy_state.py "$operation" "$@"
 }
@@ -40,14 +42,14 @@ finish() {
     trap - EXIT HUP INT TERM
     if [[ $ROLLBACK_REQUIRED == 1 ]]; then
         echo 'Deployment failed; checking whether the previous image can resume.' >&2
-        compose "$IMAGE" stop ticket-watcher-ui || true
-        if [[ -n "$PREVIOUS_IMAGE" ]] && \
+        if compose "$IMAGE" stop ticket-watcher-ui && [[ -n "$PREVIOUS_IMAGE" ]] && \
+            helper "$IMAGE" rollback-migration && \
             helper "$PREVIOUS_IMAGE" verify --expected "$PREVIOUS_SCHEMA" && \
             { [[ ! -f "$BACKUP/metadata.json" ]] || helper "$PREVIOUS_IMAGE" resume; } && \
             healthy "$PREVIOUS_IMAGE"; then
             echo 'Previous image restored. Deployment reported as failed.' >&2
         else
-            echo 'UI left stopped. Inspect the private backup and recover manually.' >&2
+            echo 'Automatic recovery stopped. Inspect service state and the private backup; do not restore delivery rows after work resumed.' >&2
         fi
         result=1
     fi
@@ -97,7 +99,7 @@ main() {
     [[ "$EXPECTED_SCHEMA" =~ ^[0-9a-f]{64}$ ]] || return 1
     if [[ -n "$PREVIOUS_IMAGE" ]]; then
         PREVIOUS_SCHEMA=$(helper "$PREVIOUS_IMAGE" schema)
-        helper "$IMAGE" verify --expected "$EXPECTED_SCHEMA"
+        helper "$IMAGE" verify --expected "$EXPECTED_SCHEMA" --allow-migration
     fi
     trap finish EXIT
     trap 'exit 130' INT
@@ -108,8 +110,8 @@ main() {
     if [[ -n "$PREVIOUS_IMAGE" ]]; then
         compose "$IMAGE" stop ticket-watcher-ui
     fi
-    # Snapshot all private data while stopped; refuse automatic schema changes.
-    helper "$IMAGE" prepare --expected "$EXPECTED_SCHEMA"
+    # Snapshot while stopped; only an explicitly supported, rehearsed migration is allowed.
+    helper "$IMAGE" prepare --expected "$EXPECTED_SCHEMA" --allow-migration
     healthy "$IMAGE"
     compose "$IMAGE" stop ticket-watcher-ui
     helper "$IMAGE" resume
