@@ -3,6 +3,7 @@ import json
 import sqlite3
 import subprocess
 import sys
+from contextlib import closing
 from pathlib import Path
 
 import pytest
@@ -133,7 +134,9 @@ def legacy_config(data):
     (data / "ui-config.yaml").write_text(
         yaml.safe_dump({"app": {"database_path": "watcher.db", "ui_paused": False}})
     )
-    with sqlite3.connect(data / "watcher.db") as db:
+    # A stopped deployment has no live DB handle; explicitly close this fixture
+    # rather than relying on garbage collection of SQLite's context manager.
+    with closing(sqlite3.connect(data / "watcher.db")) as db, db:
         db.executescript(SCHEMA.replace(OUTBOX_SCHEMA, LEGACY_OUTBOX))
         db.execute("PRAGMA user_version=2")
         db.execute(
@@ -305,3 +308,22 @@ def test_invalid_backup_never_overwrites_migrated_database(volume):
     with pytest.raises(deploy_state.DeploymentError, match="Backup structure"):
         deploy_state.rollback_migration(data, backup)
     assert (data / "watcher.db").read_bytes() == before
+
+
+def test_interrupted_restore_preserves_database_and_removes_temporary_file(volume, monkeypatch):
+    data, backup = volume
+    legacy_config(data)
+    deploy_state.prepare(data, backup, deploy_state.supported_schema(), allow_migration=True)
+    before = (data / "watcher.db").read_bytes()
+    settings = (data / "ui-config.yaml").read_bytes()
+
+    def fail_copy(source, destination):
+        Path(destination).write_bytes(b"incomplete restore")
+        raise OSError("copy interrupted")
+
+    monkeypatch.setattr(deploy_state.shutil, "copy2", fail_copy)
+    with pytest.raises(OSError, match="copy interrupted"):
+        deploy_state.rollback_migration(data, backup)
+    assert (data / "watcher.db").read_bytes() == before
+    assert (data / "ui-config.yaml").read_bytes() == settings
+    assert not list(data.glob(".watcher-restore-*"))

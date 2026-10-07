@@ -214,6 +214,21 @@ def resume(data, backup):
     write_paused(data, document, metadata["paused"])
 
 
+def restore_file(source, destination):
+    # copy2 applies timestamps/mode to its destination. Keep that file root-owned
+    # until metadata is complete so the restricted helper needs no FOWNER capability.
+    descriptor, name = tempfile.mkstemp(prefix=".watcher-restore-", dir=destination.parent)
+    os.close(descriptor)
+    temporary = Path(name)
+    try:
+        shutil.copy2(source, temporary)
+        if os.geteuid() == 0:
+            os.chown(temporary, 10001, 10001)
+        os.replace(temporary, destination)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
 def rollback_migration(data, backup):
     path = backup / "metadata.json"
     if not path.exists():
@@ -238,9 +253,7 @@ def rollback_migration(data, backup):
         source = Path(str(saved_database) + suffix)
         destination = Path(str(database) + suffix)
         if source.exists():
-            shutil.copy2(source, destination)
-            if os.geteuid() == 0:
-                os.chown(destination, 10001, 10001)
+            restore_file(source, destination)
         else:
             destination.unlink(missing_ok=True)
     write_paused(data, document, metadata["paused"])

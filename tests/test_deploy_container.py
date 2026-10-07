@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 SMOKE = r"""
-import runpy, sqlite3, tempfile
+import os, runpy, sqlite3, tempfile
 from pathlib import Path
 from ticket_watcher import storage
 
@@ -22,6 +22,13 @@ with tempfile.TemporaryDirectory() as directory:
         db.execute('PRAGMA user_version=2')
         db.execute("INSERT INTO events VALUES ('e',NULL,'RELEASE',1,'{}')")
         db.execute("INSERT INTO outbox VALUES ('e','SENT',1,1,100,NULL,'sent-id',NULL,'[]')")
+    # Match the live volume: the helper is root with no FOWNER capability, while
+    # the application owns its private directory, configuration and database.
+    os.chmod(data, 0o700)
+    os.chown(data, 10001, 10001)
+    for path in (data / 'ui-config.yaml', data / 'watcher.db'):
+        os.chmod(path, 0o600)
+        os.chown(path, 10001, 10001)
     original = (data / 'watcher.db').read_bytes()
     expected = helper['supported_schema']()
     assert helper['ensure_schema'](data, expected, allow_migration=True)
@@ -34,6 +41,8 @@ with tempfile.TemporaryDirectory() as directory:
     helper['rollback_migration'](data, backup)
     assert (data / 'watcher.db').read_bytes() == original
     assert (data / 'watcher.db').stat().st_uid == 10001
+    assert (data / 'watcher.db').stat().st_mode & 0o777 == 0o600
+    assert not list(data.glob('.watcher-restore-*'))
     helper['prepare'](data, root / 'second-backup', expected, allow_migration=True)
     helper['resume'](data, root / 'second-backup')
     assert not helper['read_document'](data)[1].ui_paused
