@@ -5,13 +5,14 @@ from contextlib import closing
 
 from .config import Config
 from .models import Result, timestamp, utcnow
+from .storage import SCHEMA_VERSION
 
 
 def health_snapshot(connection, targets, now: float) -> Result:
     row = connection.execute("SELECT value FROM runtime WHERE key='heartbeat'").fetchone()
     heartbeat = float(row[0]) if row else None
     pending = connection.execute(
-        "SELECT count(*) FROM outbox WHERE status IN ('PENDING','INFLIGHT')"
+        "SELECT count(DISTINCT event_id) FROM outbox WHERE status IN ('PENDING','INFLIGHT')"
     ).fetchone()[0]
     platform = connection.execute(
         "SELECT paused_reason FROM platform WHERE id='ticketplus'"
@@ -42,6 +43,6 @@ def read_health(config: Config, clock=utcnow) -> Result:
     with closing(sqlite3.connect(uri, uri=True, timeout=1, isolation_level=None)) as connection:
         # One consistent read snapshot; never initialize or migrate a missing/old DB.
         connection.execute("BEGIN")
-        if connection.execute("PRAGMA user_version").fetchone()[0] != 2:
+        if connection.execute("PRAGMA user_version").fetchone()[0] != SCHEMA_VERSION:
             raise ValueError("資料庫版本不支援，請先由監控程序啟動或更新")
         return health_snapshot(connection, config.targets, clock())

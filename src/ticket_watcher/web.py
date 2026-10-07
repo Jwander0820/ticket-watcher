@@ -42,6 +42,7 @@ SETTINGS = {
         "delivery_ttl_seconds",
         "worker_alerts_enabled",
         "worker_alert_channel_id",
+        "worker_alert_channel_ids",
     },
 }
 
@@ -215,7 +216,7 @@ class Controller:
                         {"message": message, "worker_alert": True},
                         self.config.notification_ttl,
                         self.config.worker_alerts,
-                        channel_id=self.config.worker_alert_channel,
+                        channel_ids=self.config.worker_notification_channels,
                     )
             self.watcher.wake()
         except Exception as error:
@@ -308,7 +309,7 @@ class Controller:
             "notifications": {
                 "system_alerts_enabled": c.system_alerts,
                 "worker_alerts_enabled": c.worker_alerts,
-                "worker_alert_channel_id": c.worker_alert_channel,
+                "worker_alert_channel_ids": list(c.worker_notification_channels),
                 "delivery_ttl_seconds": c.notification_ttl,
             },
         }
@@ -322,6 +323,7 @@ class Controller:
         targets = []
         for target in self.config.targets:
             value = asdict(target)
+            value["channel_ids"] = list(target.notification_channels)
             value["stop_at"] = (
                 datetime.fromtimestamp(target.stop_at, UTC).isoformat() if target.stop_at else None
             )
@@ -495,9 +497,11 @@ async def mutate(request):
             if ident and not existing:
                 raise web.HTTPNotFound()
             if request.method == "DELETE":
-                if kind == "channels" and any(t.channel_id == ident for t in c.config.targets):
+                if kind == "channels" and any(
+                    ident in t.notification_channels for t in c.config.targets
+                ):
                     raise Conflict("仍有監控使用此頻道，請先更換監控的通知頻道。")
-                if kind == "channels" and c.config.worker_alert_channel == ident:
+                if kind == "channels" and ident in c.config.worker_notification_channels:
                     raise Conflict("服務異常通知仍使用此頻道，請先更換通知目的地。")
                 entries.remove(existing)
                 if kind == "channels":
@@ -527,6 +531,7 @@ async def mutate(request):
                         "item_ids",
                         "stop_at",
                         "channel_id",
+                        "channel_ids",
                         "auto_stop",
                     }:
                         raise ValueError
@@ -540,6 +545,10 @@ async def mutate(request):
                         **value,
                         "id": ident or "watch-" + uuid.uuid4().hex[:12],
                     }
+                    if "channel_ids" in value and "channel_id" not in value:
+                        updated.pop("channel_id", None)
+                    elif "channel_id" in value and "channel_ids" not in value:
+                        updated.pop("channel_ids", None)
                     updated.setdefault("enabled", False)
                 if existing:
                     entries[entries.index(existing)] = updated
@@ -553,6 +562,17 @@ async def mutate(request):
                 if not isinstance(fields, dict) or set(fields) - SETTINGS[section]:
                     raise ValueError
                 document.setdefault(section, {}).update(fields)
+                if section == "notifications":
+                    if (
+                        "worker_alert_channel_ids" in fields
+                        and "worker_alert_channel_id" not in fields
+                    ):
+                        document[section].pop("worker_alert_channel_id", None)
+                    elif (
+                        "worker_alert_channel_id" in fields
+                        and "worker_alert_channel_ids" not in fields
+                    ):
+                        document[section].pop("worker_alert_channel_ids", None)
         else:
             raise web.HTTPNotFound()
         await c.save(document, credentials)

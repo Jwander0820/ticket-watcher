@@ -29,13 +29,15 @@ CLI 常駐程序需重啟才會套用外部設定變更。UI 儲存會自動重�
 | `url` | 公開 HTTPS `activity/<活動ID>` 或 `order/<活動ID>/<場次ID>` 網址，不含 query／fragment |
 | `platform` / `source` | 目前僅 `ticketplus`；來源可用 `auto` 或 `api` |
 | `enabled` | 是否啟用；設定範本為 `false`，省略時為 `true` |
-| `channel_id` | 通知目的地，預設 `default`，或填已建立的命名頻道 ID |
+| `channel_ids` | 通知目的地陣列，預設 `[default]`，可填多個已建立的頻道 ID；至少一個且不可重複 |
 | `session_ids` | 指定場次；空陣列代表該 URL 範圍內所有公開場次 |
 | `item_ids` | `order` URL 的票區／票種 ID；空陣列代表全部公開項目 |
 | `auto_stop` | 預設 `true`，依演出開始時間停止 |
 | `stop_at` | 額外停止期限，預設未設定，必須包含時區 |
 
 `activity` URL 監控場次外頁；`order` URL 已限定一場，自動選擇該場的票區（AREA）或票種（PRODUCT）來源。`session_ids` 可使用 API 的 `s000001778` 或公開場次 ID。
+
+例如 `channel_ids: [default, concerts]` 會向兩個頻道發送同一事件，`concerts` 需先建立。舊欄位 `channel_id: default` 仍可讀取；同一目標不可同時指定 `channel_id` 與 `channel_ids`。
 
 只有外頁網址時，先以 `query --detail full` 取得每場的 `order_url`。公開 API 可以取得售完場次的內頁資料，不需先點入網站或登入。
 
@@ -88,12 +90,16 @@ stop_at: '2026-11-29T18:00:00+08:00'
 | `notifications.webhook_url_env` | `DISCORD_WEBHOOK_URL`，預設頻道的環境變數名稱 |
 | `notifications.system_alerts_enabled` | `true`，查詢異常與恢復通知 |
 | `notifications.worker_alerts_enabled` | `true`，UI 監控工作中止／穩定恢復通知 |
-| `notifications.worker_alert_channel_id` | `default`，UI 服務告警目的地 |
+| `notifications.worker_alert_channel_ids` | `[default]`，UI 服務告警目的地陣列，可複選 |
 | `notifications.delivery_ttl_seconds` | `600`，通知有效期限 10 分鐘 |
 | `notifications.retry_delays_seconds` | `[10, 30, 60, 120, 300]`，失敗重試間隔 |
 | `app.retention_days` | `30`，事件歷史保留天數；保留未完成工作 |
 
 `channels` 只存頻道的 `id` 與 `name`；Webhook 由 [控制台](ui.md#設定-discord-頻道) 存入資料庫旁的私有 JSON，不填進 YAML。未設定 Webhook 時，事件留在待送佇列，超過 TTL 就過期。
+
+各目的頻道獨立保存送達、訊息 ID、嘗試次數與取消狀態；已成功頻道不因其他頻道失敗而重送。Discord 429 仍遵守原有共用冷卻。服務告警的舊欄位 `worker_alert_channel_id` 仍可讀取，但不可與陣列欄位同時指定。
+
+多頻道功能使用 SQLite 第 3 版資料表。監控程序啟動時會把第 1／2 版的單頻道通知轉為一筆對應頻道的送達紀錄，保留基準、狀態、重試次數、TTL 及訊息 ID。更新前先停止所有共用資料庫的程序並備份完整資料目錄；VPS 自動部署仍會拒絕資料表變更，需先依 [遷移步驟](vps-migration.md#多頻道通知資料庫升級) 手動完成。舊版程式無法直接讀取第 3 版資料庫。
 
 直接執行 CLI 時，設定程序環境：
 

@@ -84,6 +84,19 @@ docker compose -f compose.ui.yaml exec -T ticket-watcher-ui ticket-watcher --con
 
 UI 會自動重新建立意外中止的監控工作，程序完全退出時仍依 Compose 的重啟政策處理。搬移後可在「輪詢設定 → 監控服務異常通知」確認告警目的地；重試流程、健康資訊與日誌見 [維運指南](operations.md)。平台保護性暫停不會自動解除。
 
+## 多頻道通知資料庫升級
+
+2026-10-07 新增的多頻道通知將 SQLite 從第 2 版升為第 3 版。VPS 部署入口會拒絕自動變更資料表，先在維護窗口停用部署排程、停止 UI，依本頁備份流程保存完整 volume、設定及原映像版本。
+
+確認新映像已下載、`TICKET_WATCHER_IMAGE` 指向含多頻道功能的新映像後，可從 VPS 專案根目錄執行一次離線遷移：
+
+```sh
+docker compose -f compose.vps.yaml stop ticket-watcher-ui
+docker compose -f compose.vps.yaml run --rm --no-deps --entrypoint python ticket-watcher-ui -c "from ticket_watcher.config import load_config; from ticket_watcher.storage import Store; Store(load_config('/app/data/ui-config.yaml').database_path).close()"
+```
+
+這個命令只載入設定及升級 SQLite，不建立查票或通知程序。須先完成停止與備份，並確認沒有其他 CLI／容器共用該資料庫；遷移保留票況基準、送達紀錄、重試與租約。之後以新映像重新部署驗收，核對原暫停狀態、目標及頻道選擇。若需回復舊映像，必須先停止服務並還原升級前的完整資料，不能讓舊程式直接讀第 3 版資料庫。
+
 ## 遠端查看控制台
 
 ### Cloudflare Tunnel + Access

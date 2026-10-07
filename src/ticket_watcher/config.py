@@ -82,6 +82,11 @@ class Target:
     platform: str = "ticketplus"
     channel_id: str = "default"
     auto_stop: bool = True
+    channel_ids: tuple[str, ...] = ()
+
+    @property
+    def notification_channels(self) -> tuple[str, ...]:
+        return self.channel_ids or (self.channel_id,)
 
     @property
     def signature(self) -> str:
@@ -117,6 +122,7 @@ class Config:
     channels: tuple[Channel, ...] = field(default_factory=tuple)
     ui_paused: bool = False
     ticketplus_proxy: str = field(default_factory=_ticketplus_proxy_from_env, repr=False)
+    worker_alert_channel_ids: tuple[str, ...] = ()
 
     def __post_init__(self):
         validate_ticketplus_proxy(self.ticketplus_proxy)
@@ -124,6 +130,10 @@ class Config:
     @property
     def secrets_path(self) -> Path:
         return self.database_path.with_name("discord-webhooks.json")
+
+    @property
+    def worker_notification_channels(self) -> tuple[str, ...]:
+        return self.worker_alert_channel_ids or (self.worker_alert_channel,)
 
 
 def _section(data: dict, key: str, allowed: set[str]) -> dict:
@@ -158,6 +168,20 @@ def _sequence(value) -> tuple[int, ...]:
     if not isinstance(value, list) or not value:
         raise ValueError("重試設定必須是非空秒數陣列")
     return tuple(_int(x) for x in value)
+
+
+def _notification_channels(entry: dict, single: str, multiple: str, available: set[str]):
+    if single in entry and multiple in entry:
+        raise ValueError("通知頻道請使用單一 ID 或 ID 陣列，不能同時指定")
+    values = entry.get(multiple, [entry.get(single, "default")])
+    if (
+        not isinstance(values, list)
+        or not values
+        or any(not isinstance(value, str) or value not in available for value in values)
+        or len(set(values)) != len(values)
+    ):
+        raise ValueError("通知頻道需至少選擇一個已建立的頻道，不可重複")
+    return tuple(values)
 
 
 def load_config(path: str | Path | None = None) -> Config:
@@ -204,6 +228,7 @@ def parse_config(data: dict, directory: Path) -> Config:
             "system_alerts_enabled",
             "worker_alerts_enabled",
             "worker_alert_channel_id",
+            "worker_alert_channel_ids",
             "delivery_ttl_seconds",
             "retry_delays_seconds",
         },
@@ -234,12 +259,10 @@ def parse_config(data: dict, directory: Path) -> Config:
         if not isinstance(name, str) or not 1 <= len(name.strip()) <= 80:
             raise ValueError("通知頻道名稱需為 1 至 80 個字")
         channels.append(Channel(ident, name.strip()))
-    worker_channel = notice.get("worker_alert_channel_id", "default")
-    if not isinstance(worker_channel, str) or worker_channel not in {
-        "default",
-        *(c.id for c in channels),
-    }:
-        raise ValueError("服務異常通知指定的 Discord 頻道不存在")
+    available_channels = {"default", *(c.id for c in channels)}
+    worker_channels = _notification_channels(
+        notice, "worker_alert_channel_id", "worker_alert_channel_ids", available_channels
+    )
     targets = []
     entries = data.get("targets", [])
     if not isinstance(entries, list):
@@ -256,6 +279,7 @@ def parse_config(data: dict, directory: Path) -> Config:
             "item_ids",
             "stop_at",
             "channel_id",
+            "channel_ids",
             "auto_stop",
         }:
             raise ValueError("監控目標欄位不正確")
@@ -284,9 +308,9 @@ def parse_config(data: dict, directory: Path) -> Config:
             if stop.tzinfo is None:
                 raise ValueError("stop_at 必須包含時區")
             stop = stop.timestamp()
-        channel = entry.get("channel_id", "default")
-        if channel not in {"default", *(c.id for c in channels)}:
-            raise ValueError("監控指定的 Discord 頻道不存在")
+        destinations = _notification_channels(
+            entry, "channel_id", "channel_ids", available_channels
+        )
         url = validate_url(entry["url"])
         if filters[1] and "/activity/" in url:
             raise ValueError("票區或票種篩選需使用 order 場次網址")
@@ -299,7 +323,8 @@ def parse_config(data: dict, directory: Path) -> Config:
                 entry.get("source", "auto"),
                 *filters,
                 stop,
-                channel_id=channel,
+                channel_id=destinations[0],
+                channel_ids=destinations if "channel_ids" in entry else (),
                 auto_stop=_bool(entry.get("auto_stop", True)),
             )
         )
@@ -316,7 +341,8 @@ def parse_config(data: dict, directory: Path) -> Config:
         webhook_url_env=env_name,
         system_alerts=_bool(notice.get("system_alerts_enabled", True)),
         worker_alerts=_bool(notice.get("worker_alerts_enabled", True)),
-        worker_alert_channel=worker_channel,
+        worker_alert_channel=worker_channels[0],
+        worker_alert_channel_ids=worker_channels if "worker_alert_channel_ids" in notice else (),
         notification_ttl=_int(notice.get("delivery_ttl_seconds", 600)),
         retry_delays=_sequence(notice.get("retry_delays_seconds", [10, 30, 60, 120, 300])),
         retention_days=_int(app.get("retention_days", 30)),

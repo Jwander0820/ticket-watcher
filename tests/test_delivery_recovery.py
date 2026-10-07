@@ -85,7 +85,7 @@ def test_v1_database_migrates_without_losing_baseline_or_pending_work(harness):
     other = Store(h["config"].database_path)
     try:
         assert other.items("test")[0]["last_valid"] == "AVAILABLE"
-        assert other.connection.execute("PRAGMA user_version").fetchone()[0] == 2
+        assert other.connection.execute("PRAGMA user_version").fetchone()[0] == 3
         assert (
             other.connection.execute(
                 "SELECT status,excluded_items FROM outbox WHERE status='PENDING'"

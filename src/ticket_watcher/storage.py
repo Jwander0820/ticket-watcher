@@ -6,7 +6,19 @@ from pathlib import Path
 from .config import Config, Target
 from .schedule import stop_info
 
-SCHEMA = """
+SCHEMA_VERSION = 3
+OUTBOX_SCHEMA = """
+CREATE TABLE IF NOT EXISTS outbox (
+ event_id TEXT NOT NULL REFERENCES events(id), channel_id TEXT NOT NULL,
+ status TEXT NOT NULL DEFAULT 'PENDING',
+ attempts INTEGER NOT NULL DEFAULT 0, next_attempt REAL NOT NULL, expires_at REAL NOT NULL,
+ lease_until REAL, message_id TEXT, last_error TEXT,
+ excluded_items TEXT NOT NULL DEFAULT '[]', PRIMARY KEY(event_id, channel_id)
+);
+"""
+
+SCHEMA = (
+    """
 CREATE TABLE IF NOT EXISTS targets (
  id TEXT PRIMARY KEY, signature TEXT NOT NULL, name TEXT NOT NULL,
  mode TEXT NOT NULL DEFAULT 'NORMAL', next_check REAL NOT NULL DEFAULT 0,
@@ -29,12 +41,9 @@ CREATE TABLE IF NOT EXISTS events (
  id TEXT PRIMARY KEY, target_id TEXT, kind TEXT NOT NULL,
  created_at REAL NOT NULL, payload TEXT NOT NULL
 );
-CREATE TABLE IF NOT EXISTS outbox (
- event_id TEXT PRIMARY KEY REFERENCES events(id), status TEXT NOT NULL DEFAULT 'PENDING',
- attempts INTEGER NOT NULL DEFAULT 0, next_attempt REAL NOT NULL, expires_at REAL NOT NULL,
- lease_until REAL, message_id TEXT, last_error TEXT,
- excluded_items TEXT NOT NULL DEFAULT '[]'
-);
+"""
+    + OUTBOX_SCHEMA
+    + """
 CREATE TABLE IF NOT EXISTS platform (
  id TEXT PRIMARY KEY, next_request REAL NOT NULL DEFAULT 0,
  blocked_until REAL NOT NULL DEFAULT 0, paused_reason TEXT,
@@ -50,6 +59,7 @@ CREATE TABLE IF NOT EXISTS runtime (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS outbox_due ON outbox(status, next_attempt);
 CREATE INDEX IF NOT EXISTS events_created ON events(created_at);
 """
+)
 
 
 class LeaseLost(Exception):
@@ -72,19 +82,31 @@ class Store:
         self.connection.execute("PRAGMA journal_mode=WAL")
         self.connection.execute("PRAGMA foreign_keys=ON")
         version = self.connection.execute("PRAGMA user_version").fetchone()[0]
-        if version not in (0, 1, 2):
+        if version not in (0, 1, 2, SCHEMA_VERSION):
             self.connection.close()
             raise ValueError("資料庫版本不支援")
-        if version == 1:
+        if version in (1, 2):
             with self.transaction() as db:
                 columns = {row[1] for row in db.execute("PRAGMA table_info(outbox)")}
                 if "excluded_items" not in columns:
                     db.execute(
                         "ALTER TABLE outbox ADD COLUMN excluded_items TEXT NOT NULL DEFAULT '[]'"
                     )
+                if "channel_id" not in columns:
+                    db.execute("ALTER TABLE outbox RENAME TO outbox_legacy")
+                    db.execute(OUTBOX_SCHEMA)
+                    db.execute(
+                        """INSERT INTO outbox SELECT o.event_id,
+                         coalesce(json_extract(e.payload,'$.channel_id'),'default'),
+                         o.status,o.attempts,o.next_attempt,o.expires_at,o.lease_until,
+                         o.message_id,o.last_error,o.excluded_items
+                         FROM outbox_legacy o JOIN events e ON e.id=o.event_id"""
+                    )
+                    db.execute("DROP TABLE outbox_legacy")
+                db.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
         self.connection.executescript(SCHEMA)
-        if version != 2:
-            self.connection.execute("PRAGMA user_version=2")
+        if version == 0:
+            self.connection.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
 
     def close(self):
         self.connection.close()
@@ -247,8 +269,15 @@ class Store:
         ttl: float,
         enabled: bool,
         channel_id: str = "default",
+        *,
+        channel_ids: tuple[str, ...] | None = None,
     ):
-        payload = {**payload, "channel_id": channel_id}
+        destinations = tuple(
+            dict.fromkeys(channel_ids if channel_ids is not None else (channel_id,))
+        )
+        if not destinations:
+            raise ValueError("通知需至少一個目的頻道")
+        payload = {**payload, "channel_id": destinations[0], "channel_ids": list(destinations)}
         if target_id:
             target = db.execute("SELECT signature FROM targets WHERE id=?", (target_id,)).fetchone()
             if target:
@@ -257,16 +286,20 @@ class Store:
             "INSERT INTO events VALUES(?,?,?,?,?)",
             (event_id, target_id, kind, now, json.dumps(payload, ensure_ascii=False)),
         )
-        db.execute(
-            "INSERT INTO outbox(event_id,status,next_attempt,expires_at) VALUES(?,?,?,?)",
-            (event_id, "PENDING" if enabled else "DISABLED", now, now + ttl),
+        db.executemany(
+            "INSERT INTO outbox(event_id,channel_id,status,next_attempt,expires_at) VALUES(?,?,?,?,?)",
+            [
+                (event_id, channel, "PENDING" if enabled else "DISABLED", now, now + ttl)
+                for channel in destinations
+            ],
         )
 
     def cancel_unavailable(self, db, target_id: str, unavailable: set[str], *, kind="RELEASE"):
         if not unavailable:
             return
         rows = db.execute(
-            """SELECT o.event_id,o.excluded_items,e.payload FROM outbox o JOIN events e ON e.id=o.event_id
+            """SELECT o.event_id,o.channel_id,o.excluded_items,e.payload
+             FROM outbox o JOIN events e ON e.id=o.event_id
          WHERE e.target_id=? AND e.kind=? AND o.status IN ('PENDING','INFLIGHT')""",
             (target_id, kind),
         ).fetchall()
@@ -275,12 +308,13 @@ class Store:
             excluded = set(json.loads(row["excluded_items"])) | unavailable
             remaining = [x for x in payload["changes"] if x["item_key"] not in excluded]
             db.execute(
-                "UPDATE outbox SET excluded_items=? WHERE event_id=?",
-                (json.dumps(sorted(excluded)), row["event_id"]),
+                "UPDATE outbox SET excluded_items=? WHERE event_id=? AND channel_id=?",
+                (json.dumps(sorted(excluded)), row["event_id"], row["channel_id"]),
             )
             if not remaining:
                 db.execute(
-                    "UPDATE outbox SET status='CANCELLED' WHERE event_id=?", (row["event_id"],)
+                    "UPDATE outbox SET status='CANCELLED' WHERE event_id=? AND channel_id=?",
+                    (row["event_id"], row["channel_id"]),
                 )
 
     def cancel_obsolete_notices(self, config: Config, now: float):
@@ -295,12 +329,13 @@ class Store:
             }
             channels = {"default", *(channel.id for channel in config.channels)}
             rows = db.execute(
-                """SELECT e.id,e.target_id,e.payload FROM events e JOIN outbox o ON o.event_id=e.id
+                """SELECT e.id,e.target_id,e.payload,o.channel_id
+                 FROM events e JOIN outbox o ON o.event_id=e.id
                  WHERE o.status IN ('PENDING','INFLIGHT')"""
             ).fetchall()
             for row in rows:
                 payload = json.loads(row["payload"])
-                channel = payload.get("channel_id", "default")
+                channel = row["channel_id"]
                 obsolete = channel not in channels
                 if row["target_id"]:
                     target = targets.get(row["target_id"])
@@ -308,7 +343,7 @@ class Store:
                         obsolete
                         or not target
                         or (
-                            channel != target.channel_id
+                            channel not in target.notification_channels
                             or payload.get("target_signature", target.signature) != target.signature
                         )
                     )
@@ -316,11 +351,12 @@ class Store:
                     obsolete = (
                         obsolete
                         or not config.worker_alerts
-                        or channel != config.worker_alert_channel
+                        or channel not in config.worker_notification_channels
                     )
                 if obsolete:
                     db.execute(
-                        "UPDATE outbox SET status='CANCELLED' WHERE event_id=?", (row["id"],)
+                        "UPDATE outbox SET status='CANCELLED' WHERE event_id=? AND channel_id=?",
+                        (row["id"], channel),
                     )
 
     def next_notice_at(self, now: float, channels: set[str]) -> float | None:
@@ -337,7 +373,7 @@ class Store:
                 CASE WHEN o.status='INFLIGHT' THEN coalesce(o.lease_until,0) ELSE 0 END,
                 ?,?)) FROM outbox o JOIN events e ON e.id=o.event_id
                 WHERE o.status IN ('PENDING','INFLIGHT')
-                AND coalesce(json_extract(e.payload,'$.channel_id'),'default') IN ("""
+                AND o.channel_id IN ("""
             + ",".join("?" for _ in channels)
             + ")",
             (platform["blocked_until"], platform["lease_until"], *sorted(channels)),
@@ -376,11 +412,7 @@ class Store:
             if channels is not None:
                 if not channels:
                     return None
-                filters.append(
-                    "coalesce(json_extract(e.payload,'$.channel_id'),'default') IN ("
-                    + ",".join("?" for _ in channels)
-                    + ")"
-                )
+                filters.append("o.channel_id IN (" + ",".join("?" for _ in channels) + ")")
                 params.extend(sorted(channels))
             if event_id is not None:
                 filters.append("o.event_id=?")
@@ -391,19 +423,20 @@ class Store:
              FROM outbox o JOIN events e ON e.id=o.event_id
              WHERE o.status='PENDING' AND o.next_attempt<=?"""
                 + extra
-                + " ORDER BY o.next_attempt,e.created_at LIMIT 1",
+                + " ORDER BY o.next_attempt,e.created_at,o.event_id,o.channel_id LIMIT 1",
                 params,
             ).fetchone()
             if not row:
                 return None
             db.execute(
-                "UPDATE outbox SET status='INFLIGHT',lease_until=?,attempts=attempts+1 WHERE event_id=?",
-                (now + lease_seconds, row["event_id"]),
+                """UPDATE outbox SET status='INFLIGHT',lease_until=?,attempts=attempts+1
+                 WHERE event_id=? AND channel_id=?""",
+                (now + lease_seconds, row["event_id"], row["channel_id"]),
             )
             notice = dict(row)
             notice["attempts"] += 1
             # Attempts only increase; a recovered delivery gets a different owner.
-            notice["claim_token"] = f"{row['event_id']}:{notice['attempts']}"
+            notice["claim_token"] = f"{row['event_id']}:{row['channel_id']}:{notice['attempts']}"
             db.execute(
                 "UPDATE platform SET lease_owner=?,lease_until=? WHERE id='discord'",
                 (notice["claim_token"], now + lease_seconds),
@@ -432,7 +465,7 @@ class Store:
             updated = db.execute(
                 """UPDATE outbox SET status=?,message_id=?,last_error=?,
                  next_attempt=coalesce(?,next_attempt),lease_until=NULL
-                 WHERE event_id=? AND status='INFLIGHT' AND attempts=? AND lease_until>?
+                 WHERE event_id=? AND channel_id=? AND status='INFLIGHT' AND attempts=? AND lease_until>?
                  AND EXISTS (SELECT 1 FROM platform WHERE id='discord'
                   AND lease_owner=? AND lease_until>?)""",
                 (
@@ -441,6 +474,7 @@ class Store:
                     error,
                     next_attempt,
                     notice["event_id"],
+                    notice["channel_id"],
                     notice["attempts"],
                     now,
                     notice["claim_token"],
@@ -456,10 +490,40 @@ class Store:
     def notification_status(self, event_id: str | None) -> dict:
         if event_id is None:
             return {"status": "NOT_REQUIRED"}
-        row = self.connection.execute(
-            "SELECT status,message_id,attempts,last_error FROM outbox WHERE event_id=?", (event_id,)
-        ).fetchone()
-        return dict(row) if row else {"status": "NOT_REQUIRED"}
+        rows = self.connection.execute(
+            """SELECT channel_id,status,message_id,attempts,last_error FROM outbox
+             WHERE event_id=? ORDER BY channel_id""",
+            (event_id,),
+        ).fetchall()
+        if not rows:
+            return {"status": "NOT_REQUIRED"}
+        deliveries = [dict(row) for row in rows]
+        statuses = {row["status"] for row in rows}
+        if len(statuses) == 1:
+            status = rows[0]["status"]
+        else:
+            status = next(
+                (
+                    value
+                    for value in (
+                        "INFLIGHT",
+                        "PENDING",
+                        "PARTIAL",
+                        "FAILED",
+                        "EXPIRED",
+                        "CANCELLED",
+                    )
+                    if (value == "PARTIAL" and "SENT" in statuses) or value in statuses
+                ),
+                "DISABLED",
+            )
+        return {
+            "status": status,
+            "message_id": rows[0]["message_id"] if len(rows) == 1 else None,
+            "attempts": sum(row["attempts"] for row in rows),
+            "last_error": next((row["last_error"] for row in rows if row["last_error"]), None),
+            "deliveries": deliveries,
+        }
 
     def event_page(self, target_id: str | None, limit: int, offset: int) -> dict:
         where = "WHERE e.target_id=?" if target_id else ""
@@ -468,13 +532,26 @@ class Store:
             0
         ]
         rows = self.connection.execute(
-            f"""SELECT e.*,o.status AS notification_status,o.message_id,
-         o.attempts,o.last_error FROM events e LEFT JOIN outbox o ON e.id=o.event_id {where}
+            f"""SELECT e.* FROM events e {where}
          ORDER BY e.created_at DESC,e.id LIMIT ? OFFSET ?""",
             (*args, limit, offset),
         ).fetchall()
+        events = []
+        for row in rows:
+            notice = self.notification_status(row["id"])
+            events.append(
+                {
+                    **dict(row),
+                    "payload": json.loads(row["payload"]),
+                    "notification_status": notice["status"] if "deliveries" in notice else None,
+                    "message_id": notice.get("message_id"),
+                    "attempts": notice.get("attempts"),
+                    "last_error": notice.get("last_error"),
+                    "deliveries": notice.get("deliveries", []),
+                }
+            )
         return {
-            "events": [{**dict(r), "payload": json.loads(r["payload"])} for r in rows],
+            "events": events,
             "total": total,
             "next_offset": offset + limit if offset + limit < total else None,
         }
@@ -500,7 +577,9 @@ class Store:
                 return
             db.execute(
                 """DELETE FROM outbox WHERE status NOT IN ('PENDING','INFLIGHT') AND event_id IN
-             (SELECT id FROM events WHERE created_at<?)""",
+             (SELECT id FROM events WHERE created_at<? AND NOT EXISTS
+              (SELECT 1 FROM outbox active WHERE active.event_id=events.id
+               AND active.status IN ('PENDING','INFLIGHT')))""",
                 (cutoff,),
             )
             db.execute(

@@ -2,7 +2,7 @@
 
 [文件索引](README.md) · [開發指南](development.md) · [資料來源](ticketplus-source.md)
 
-本文件依目前程式整理功能與可靠性約束，更新日期為 2026-10-06。最初依 v0.1 規格及後續對話補充實作；原對話附件未能從工作區取回，本文件不是附件的逐字副本。早期驗證結果另見 [v0.1.0 紀錄](verification.md)，不代表目前功能範圍。
+本文件依目前程式整理功能與可靠性約束，更新日期為 2026-10-07。最初依 v0.1 規格及後續對話補充實作；原對話附件未能從工作區取回，本文件不是附件的逐字副本。早期驗證結果另見 [v0.1.0 紀錄](verification.md)，不代表目前功能範圍。
 
 ## 功能範圍
 
@@ -14,7 +14,7 @@ Python 核心供 CLI、控制台、VPS 與外部排程共用，使用公開 HTTP
 | 單次操作 | capabilities、query、status、events、check、tick、health、resume |
 | 常駐 | CLI `run` 或含監控工作的 `ui` |
 | 狀態 | UNKNOWN、UPCOMING、AVAILABLE、SOLD_OUT、TEMPORARILY_UNAVAILABLE、PAUSED、ENDED |
-| 通知 | 確認有票 RELEASE、外頁線索 RELEASE_HINT、系統異常／恢復；支援目標各自指定頻道 |
+| 通知 | 確認有票 RELEASE、外頁線索 RELEASE_HINT、系統異常／恢復；監控與服務告警皆可勾選多個頻道 |
 | 持久化 | 基準、排程、停止時間、事件、outbox、平台節流與租約；以 UTC 保存時間 |
 | 維運 | 唯讀 health、UI 監控工作恢復、查詢日誌輪替與歷史清理 |
 | 部署 | UI／CLI Compose、獨立 named volume、非 root、資源限制與日誌輪替 |
@@ -71,7 +71,9 @@ Python 核心供 CLI、控制台、VPS 與外部排程共用，使用公開 HTTP
 
 票況更新、事件與 outbox 入列使用同一 SQLite transaction。通知預設 TTL 10 分鐘，預設首次嘗試加五次重試，使用 `wait=true` 取得 Discord 訊息 ID，停用 mentions。未配置 Webhook 不消耗嘗試次數；過期不補發。
 
-RELEASE 與 RELEASE_HINT 分別處理待送、取消與去重。同輪變更合併通知；票況已不可購買、線索消失或場次開始時，取消或移除待送項目。通知記錄建立時的目的頻道，變更頻道取消舊通知，切回原頻道不恢復。
+RELEASE 與 RELEASE_HINT 分別處理待送、取消與去重。同輪變更合併為一筆事件；outbox 以 `(event_id, channel_id)` 保存各目的頻道的送達狀態、訊息 ID、嘗試次數及租約。失敗只重試該頻道，已成功頻道不重送；未配置頻道不阻擋其他頻道，429 仍遵守共用 Discord 冷卻。
+
+票況已不可購買、線索消失或場次開始時，取消或移除待送項目，不覆寫已送達頻道的紀錄。事件保存建立時的目的頻道；取消勾選只取消已移除頻道的待送通知，重新勾選不恢復，新勾選的頻道也不補送舊事件。事件摘要只有全部頻道成功才回報 SENT；仍有待送／傳送中時回報 PENDING／INFLIGHT，部分成功且其餘已終止時回報 PARTIAL。輸出 `deliveries` 列出各頻道結果；`health.pending_notifications` 計算有待送工作的事件數。
 
 新通知保存 `target_signature`；每次送信有獨立領取識別，回寫需匹配領取者、嘗試次數與有效租約。取消或被接手的工作不會被晚到回應覆寫，舊版沒有簽章的事件仍相容。
 

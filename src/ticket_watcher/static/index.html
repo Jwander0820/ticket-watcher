@@ -55,7 +55,7 @@
         <fieldset><legend>監控服務異常通知</legend>
           <p class="muted">監控意外中止會自動重試；連續失敗時逐步延長，最後每 5 分鐘重試。持續運作 60 秒後才通知恢復；不會解除平台封鎖或人工暫停。</p>
           <label class="checkbox" for="worker-alerts"><input id="worker-alerts" name="worker_alerts" type="checkbox">通知服務中止與穩定恢復</label>
-          <label for="worker-channel">服務通知頻道</label><p id="worker-channel-help" class="hint">可選預設頻道，或先到「Discord 頻道」新增專用 Webhook。關閉通知不影響自動恢復；整台主機離線時無法自行發送通知。</p><select id="worker-channel" name="worker_channel" aria-describedby="worker-channel-help"></select>
+          <fieldset class="channel-picker" aria-describedby="worker-channel-help"><legend>服務通知頻道（可複選）</legend><div id="worker-channels" class="channel-options"></div><p id="worker-channel-help" class="hint">至少勾選一個頻道。可先到「Discord 頻道」新增目的地；關閉通知不影響自動恢復，整台主機離線時無法自行發送通知。</p></fieldset>
         </fieldset>
         <p class="form-error" role="alert" tabindex="-1" hidden></p><div class="form-footer"><span class="muted">套用時保留票況紀錄與平台限流。</span><button type="submit" class="primary">儲存設定</button></div>
       </form>
@@ -78,7 +78,7 @@
       <div class="dialog-heading"><div><p class="eyebrow">WATCH LIST</p><h2 id="target-title">新增監控</h2></div><button type="button" class="icon-button" data-close="target-dialog" aria-label="關閉">×</button></div>
       <label for="target-name">監控名稱 <span class="required">必填</span></label><input id="target-name" name="name" maxlength="120" required placeholder="例如：優里 台北場 10/9" autocomplete="off">
       <label for="target-url">TicketPlus 活動或場次網址 <span class="required">必填</span></label><input id="target-url" name="url" type="url" required placeholder="https://ticketplus.com.tw/order/…/…" aria-describedby="url-help" autocomplete="off"><p id="url-help" class="hint">貼活動頁可監控場次；貼 order 購票頁可監控票區或票種。</p>
-      <label for="target-channel">通知到哪個頻道</label><select id="target-channel" name="channel_id" aria-describedby="channel-help"></select><p id="channel-help" class="hint">可先儲存監控，再到「Discord 頻道」新增目的地。</p>
+      <fieldset class="channel-picker" aria-describedby="channel-help"><legend>通知到哪些頻道（可複選） <span class="required">至少一個</span></legend><div id="target-channels" class="channel-options"></div><p id="channel-help" class="hint">勾選的頻道都會收到通知，各自記錄送達結果。可先儲存監控，再到「Discord 頻道」設定 Webhook。</p></fieldset>
       <label class="checkbox" for="auto-stop"><input id="auto-stop" name="auto_stop" type="checkbox" checked aria-describedby="auto-stop-help">演出開始後自動停止監控</label><p id="auto-stop-help" class="hint">依 TicketPlus 場次時間（台灣時區）判定。多場次保留尚未開始的場次；時間不明時繼續監控。</p>
       <details><summary>更多篩選與停止時間</summary><label for="session-ids">指定場次 ID（選填）</label><input id="session-ids" name="session_ids" placeholder="s000001778，多個以逗號分隔" autocomplete="off"><label for="item-ids">指定票區／票種 ID（選填）</label><input id="item-ids" name="item_ids" placeholder="a000… 或 p000…，僅適用 order 網址" autocomplete="off"><label for="stop-at">額外停止時間（本機時區，選填）</label><input id="stop-at" name="stop_at" type="datetime-local" aria-describedby="stop-at-help"><p id="stop-at-help" class="hint">與自動停止時間取較早者；留白表示只依自動停止設定。未指定 ID 時，監控該網址的全部公開項目。</p></details>
       <label class="checkbox"><input id="target-enabled" name="enabled" type="checkbox">儲存後啟用監控</label>

@@ -2,7 +2,7 @@
 const $ = (selector) => document.querySelector(selector);
 const esc = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[char]));
 const ticketLabels = {AVAILABLE:"有票", SOLD_OUT:"售完", UNKNOWN:"未知", UPCOMING:"尚未開賣", TEMPORARILY_UNAVAILABLE:"暫無票券・線索", PAUSED:"停售", ENDED:"已結束"};
-const noticeLabels = {PENDING:"待送", INFLIGHT:"傳送中", SENT:"已送達", CANCELLED:"已取消", EXPIRED:"已過期", FAILED:"傳送失敗", DISABLED:"不通知", NOT_REQUIRED:"不需通知"};
+const noticeLabels = {PENDING:"待送", INFLIGHT:"傳送中", SENT:"已送達", PARTIAL:"部分送達", CANCELLED:"已取消", EXPIRED:"已過期", FAILED:"傳送失敗", DISABLED:"不通知", NOT_REQUIRED:"不需通知"};
 const eventLabels = {RELEASE:"偵測到可購票", RELEASE_HINT:"發現釋票線索", SYSTEM:"系統通知", ERROR:"查詢異常", STATE_CHANGE:"票況變化"};
 let state = null, view = "targets", settingsDirty = false, refreshing = false, refreshAgain = false, serviceChanging = false, toastTimer;
 const checking = new Set();
@@ -18,6 +18,21 @@ const effectiveStop = (target) => target.state?.effective_stop_at || target.stop
 const isStopped = (target) => effectiveStop(target) && new Date(effectiveStop(target)) <= new Date();
 const dateText = (value) => value ? new Date(value).toLocaleString("zh-TW", {month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit",hour12:false}) : "尚無紀錄";
 const channelName = (id) => state.channels.find((channel) => channel.id === id)?.name || "未指定";
+const targetChannels = (target) => target.channel_ids?.length ? target.channel_ids : [target.channel_id || "default"];
+function fillChannels(container, name, selected, helpId) {
+  container.innerHTML = state.channels.map((c) => {
+    const id = `${name}-${c.id}`;
+    return `<label class="checkbox channel-option" for="${esc(id)}"><input id="${esc(id)}" name="${name}" type="checkbox" value="${esc(c.id)}" aria-describedby="${helpId}" ${selected.includes(c.id) ? "checked" : ""}><span>${esc(c.name)}${c.configured ? "" : "（尚未連接）"}</span></label>`;
+  }).join("");
+}
+function selectedChannels(form, name, container) {
+  const selected = new FormData(form).getAll(name);
+  if (!selected.length) {
+    container.querySelector("input")?.focus();
+    throw new Error("請至少勾選一個通知頻道。");
+  }
+  return selected;
+}
 function toast(message) {
   clearTimeout(toastTimer); $("#toast").textContent = message; $("#toast").hidden = false;
   toastTimer = setTimeout(() => { $("#toast").hidden = true; }, 5500);
@@ -41,7 +56,7 @@ function renderTargets() {
     const summary = Object.entries(s.summary || {}).map(([status,count]) => badge(status, `${ticketLabels[status] || status} ${count}`)).join("") || badge("UNKNOWN","尚未查詢");
     const unknown = (s.current_observation?.UNKNOWN || 0) > 0;
     const stopText = effectiveStop(t) ? dateText(effectiveStop(t)) : t.auto_stop ? "待取得可靠場次時間" : "未設定";
-    return `<article class="ticket"><div class="ticket-stub ${on && !s.paused_reason ? "on" : ""}"><span>${t.url.includes("/order/") ? "票區／票種" : "活動場次"}</span><strong>${label}</strong></div><div class="ticket-main"><div class="ticket-heading"><h3 class="ticket-title">${esc(t.name)}</h3><a class="ticket-link" href="${esc(t.url)}" target="_blank" rel="noreferrer">購票頁 ↗</a></div><div class="badge-group" aria-label="最後有效票況">${summary}${stopped && s.auto_stop_at === effectiveStop(t) ? badge("ENDED","演出已開始") : ""}${unknown ? badge("ERROR","本次票況不完整") : ""}${s.mode === "ACTIVE" ? badge("AVAILABLE","快速模式") : ""}</div><dl class="ticket-details"><div><dt>上次完整觀測</dt><dd>${dateText(s.observed_at)}</dd></div><div><dt>下次預定查詢</dt><dd>${on ? dateText(s.next_allowed_at) : "—"}</dd></div><div><dt>Discord 通知頻道</dt><dd>${esc(channelName(t.channel_id))}</dd></div><div><dt>停止監控時間</dt><dd>${esc(stopText)}${s.stopped_session_count ? ` · ${s.stopped_session_count} 場已開始` : ""}</dd></div></dl><div class="ticket-actions"><button class="quiet" data-action="edit-target" data-id="${t.id}">編輯</button><button class="quiet" data-action="toggle-target" data-id="${t.id}">${t.enabled ? "停用" : "啟用"}</button><button class="quiet" data-action="check" data-id="${t.id}" ${!on ? "disabled" : ""}>查詢一次</button>${s.paused_reason ? `<button class="quiet" data-action="resume" data-id="${t.id}">解除暫停</button>` : ""}<button class="quiet danger" data-action="delete-target" data-id="${t.id}">刪除</button></div></div></article>`;
+    return `<article class="ticket"><div class="ticket-stub ${on && !s.paused_reason ? "on" : ""}"><span>${t.url.includes("/order/") ? "票區／票種" : "活動場次"}</span><strong>${label}</strong></div><div class="ticket-main"><div class="ticket-heading"><h3 class="ticket-title">${esc(t.name)}</h3><a class="ticket-link" href="${esc(t.url)}" target="_blank" rel="noreferrer">購票頁 ↗</a></div><div class="badge-group" aria-label="最後有效票況">${summary}${stopped && s.auto_stop_at === effectiveStop(t) ? badge("ENDED","演出已開始") : ""}${unknown ? badge("ERROR","本次票況不完整") : ""}${s.mode === "ACTIVE" ? badge("AVAILABLE","快速模式") : ""}</div><dl class="ticket-details"><div><dt>上次完整觀測</dt><dd>${dateText(s.observed_at)}</dd></div><div><dt>下次預定查詢</dt><dd>${on ? dateText(s.next_allowed_at) : "—"}</dd></div><div><dt>Discord 通知頻道</dt><dd>${esc(targetChannels(t).map(channelName).join("、"))}</dd></div><div><dt>停止監控時間</dt><dd>${esc(stopText)}${s.stopped_session_count ? ` · ${s.stopped_session_count} 場已開始` : ""}</dd></div></dl><div class="ticket-actions"><button class="quiet" data-action="edit-target" data-id="${t.id}">編輯</button><button class="quiet" data-action="toggle-target" data-id="${t.id}">${t.enabled ? "停用" : "啟用"}</button><button class="quiet" data-action="check" data-id="${t.id}" ${!on ? "disabled" : ""}>查詢一次</button>${s.paused_reason ? `<button class="quiet" data-action="resume" data-id="${t.id}">解除暫停</button>` : ""}<button class="quiet danger" data-action="delete-target" data-id="${t.id}">刪除</button></div></div></article>`;
   }).join("") : `<div class="empty"><div class="empty-ticket" aria-hidden="true"></div><h2>留意下一張好票</h2><p>新增 TicketPlus 活動或場次網址。先設定監控與通知頻道，再開始追蹤票況。</p><button class="primary" data-action="add-target">＋ 新增第一個監控</button></div>`;
 }
 function renderChannels() {
@@ -52,7 +67,7 @@ function renderChannels() {
   }).join("");
 }
 function renderEvents() {
-  $("#event-list").innerHTML = state.events.events.length ? state.events.events.map((e) => `<article class="event-row"><time datetime="${esc(e.created_at)}">${dateText(e.created_at)}</time><div><h2>${esc(eventLabels[e.kind] || e.kind)} · ${esc(state.targets.find((t) => t.id === e.target_id)?.name || e.payload.event_name || "系統")}</h2><p>${esc(e.payload.message || e.payload.code || (e.payload.changes_total != null ? `${e.payload.changes_total} 個項目變化` : ""))}</p>${e.message_id ? `<small>訊息 ${esc(e.message_id)}</small>` : ""}</div><div>${e.notification_status ? badge(e.notification_status) : badge("UNKNOWN","僅記錄")}</div></article>`).join("") : `<div class="empty"><h2>還沒有事件</h2><p>啟用監控後，票況變化與通知結果會顯示在這裡。</p></div>`;
+  $("#event-list").innerHTML = state.events.events.length ? state.events.events.map((e) => `<article class="event-row"><time datetime="${esc(e.created_at)}">${dateText(e.created_at)}</time><div><h2>${esc(eventLabels[e.kind] || e.kind)} · ${esc(state.targets.find((t) => t.id === e.target_id)?.name || e.payload.event_name || "系統")}</h2><p>${esc(e.payload.message || e.payload.code || (e.payload.changes_total != null ? `${e.payload.changes_total} 個項目變化` : ""))}</p>${(e.deliveries || []).map((d) => `<p class="delivery-result">${esc(channelName(d.channel_id))} ${badge(d.status)}${d.message_id ? `<small>訊息 ${esc(d.message_id)}</small>` : ""}</p>`).join("")}</div><div>${e.notification_status ? badge(e.notification_status) : badge("UNKNOWN","僅記錄")}</div></article>`).join("") : `<div class="empty"><h2>還沒有事件</h2><p>啟用監控後，票況變化與通知結果會顯示在這裡。</p></div>`;
 }
 function renderQueryLogs() {
   const logs = state.query_logs || {entries:[]};
@@ -74,8 +89,7 @@ function fillSettings() {
   Object.entries(values).forEach(([name,value]) => { form.elements[name].value = value; });
   form.elements.system_alerts.checked = s.notifications.system_alerts_enabled;
   form.elements.worker_alerts.checked = s.notifications.worker_alerts_enabled;
-  form.elements.worker_channel.innerHTML = state.channels.map((c) => `<option value="${c.id}">${esc(c.name)}${c.configured ? "" : "（尚未連接）"}</option>`).join("");
-  form.elements.worker_channel.value = s.notifications.worker_alert_channel_id;
+  fillChannels($("#worker-channels"), "worker_channels", s.notifications.worker_alert_channel_ids || [s.notifications.worker_alert_channel_id], "worker-channel-help");
   form.dataset.revision = state.revision;
 }
 function render() {
@@ -137,14 +151,14 @@ function resetForm(form, id="") {
 function openTarget(id) {
   const form = $("#target-form"), target = state.targets.find((t) => t.id === id);
   resetForm(form,id || ""); $("#target-title").textContent = target ? "編輯監控" : "新增監控";
-  $("#target-channel").innerHTML = state.channels.map((c) => `<option value="${c.id}">${esc(c.name)}${c.configured ? "" : "（尚未連接）"}</option>`).join("");
+  fillChannels($("#target-channels"), "channel_ids", target ? targetChannels(target) : [state.channels.find((c) => c.configured)?.id || "default"], "channel-help");
   if (target) {
-    ["name","url","channel_id"].forEach((key) => { form.elements[key].value = target[key]; });
+    ["name","url"].forEach((key) => { form.elements[key].value = target[key]; });
     form.elements.enabled.checked = target.enabled;
     form.elements.auto_stop.checked = target.auto_stop !== false;
     form.elements.session_ids.value = target.session_ids.join(", "); form.elements.item_ids.value = target.item_ids.join(", ");
     if (target.stop_at) { const date = new Date(target.stop_at); form.elements.stop_at.value = new Date(date - date.getTimezoneOffset()*60000).toISOString().slice(0,16); }
-  } else if (state.channels.some((c) => c.configured)) form.elements.channel_id.value = state.channels.find((c) => c.configured).id;
+  }
   $("#target-dialog").showModal();
 }
 function openChannel(id) {
@@ -165,7 +179,7 @@ function confirmAction(text, accept="確認") {
     dialog.showModal();
   });
 }
-function targetValue(target) { const {name,url,enabled,session_ids,item_ids,stop_at,channel_id,auto_stop} = target; return {name,url,enabled,session_ids,item_ids,stop_at,channel_id,auto_stop}; }
+function targetValue(target) { const {name,url,enabled,session_ids,item_ids,stop_at,auto_stop} = target; return {name,url,enabled,session_ids,item_ids,stop_at,channel_ids:targetChannels(target),auto_stop}; }
 async function action(button) {
   const kind = button.dataset.action, id = button.dataset.id;
   if (kind === "add-target" || kind === "edit-target") return openTarget(id);
@@ -231,14 +245,14 @@ document.querySelectorAll("form").forEach((form) => form.addEventListener("submi
     let path, value, message;
     const f = form.elements;
     if (form.id === "target-form") {
-      value = {name:f.name.value.trim(),url:f.url.value.trim(),channel_id:f.channel_id.value,enabled:f.enabled.checked,auto_stop:f.auto_stop.checked,session_ids:ids(f.session_ids.value),item_ids:ids(f.item_ids.value),stop_at:f.stop_at.value ? new Date(f.stop_at.value).toISOString() : null};
+      value = {name:f.name.value.trim(),url:f.url.value.trim(),channel_ids:selectedChannels(form,"channel_ids",$("#target-channels")),enabled:f.enabled.checked,auto_stop:f.auto_stop.checked,session_ids:ids(f.session_ids.value),item_ids:ids(f.item_ids.value),stop_at:f.stop_at.value ? new Date(f.stop_at.value).toISOString() : null};
       path = "/api/targets"; message = "已儲存監控";
     } else if (form.id === "channel-form") {
       value = {name:f.name.value.trim(),webhook_url:f.webhook_url.value.trim()}; path = "/api/channels"; message = "已儲存頻道";
     } else {
       const n = (name) => Number(f[name].value);
       if (n("normal_max") < n("normal_min") || n("active_max") < n("active_min")) throw new Error("間隔上限不可小於下限。");
-      value = {polling:{normal_interval_seconds:[n("normal_min"),n("normal_max")],active_interval_seconds:[n("active_min"),n("active_max")],active_window_seconds:n("active_window"),exit_active_after_no_available_checks:n("exit_checks")},http:{min_request_gap_seconds:n("request_gap"),timeout_seconds:n("timeout")},notifications:{delivery_ttl_seconds:n("notification_ttl"),system_alerts_enabled:f.system_alerts.checked,worker_alerts_enabled:f.worker_alerts.checked,worker_alert_channel_id:f.worker_channel.value}};
+      value = {polling:{normal_interval_seconds:[n("normal_min"),n("normal_max")],active_interval_seconds:[n("active_min"),n("active_max")],active_window_seconds:n("active_window"),exit_active_after_no_available_checks:n("exit_checks")},http:{min_request_gap_seconds:n("request_gap"),timeout_seconds:n("timeout")},notifications:{delivery_ttl_seconds:n("notification_ttl"),system_alerts_enabled:f.system_alerts.checked,worker_alerts_enabled:f.worker_alerts.checked,worker_alert_channel_ids:selectedChannels(form,"worker_channels",$("#worker-channels"))}};
       path = "/api/settings"; message = "已儲存並套用設定";
     }
     if (form.dataset.id) path += `/${form.dataset.id}`;

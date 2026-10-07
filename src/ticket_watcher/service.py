@@ -208,7 +208,9 @@ class Watcher:
             {"message": message},
             self.config.notification_ttl,
             self.config.system_alerts,
-            channel_id=self._target(target_id).channel_id if target_id else "default",
+            channel_ids=self._target(target_id).notification_channels
+            if target_id
+            else ("default",),
         )
 
     def _error(self, error: SourceError, target: Target | None = None, *, owner=None) -> Result:
@@ -553,7 +555,7 @@ class Watcher:
                     },
                     self.config.notification_ttl,
                     True,
-                    channel_id=target.channel_id,
+                    channel_ids=target.notification_channels,
                 )
             hint_event_id = None
             if hints:
@@ -573,7 +575,7 @@ class Watcher:
                     },
                     self.config.notification_ttl,
                     True,
-                    channel_id=target.channel_id,
+                    channel_ids=target.notification_channels,
                 )
         return changes, event_id, hint_event_id
 

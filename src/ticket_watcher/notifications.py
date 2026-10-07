@@ -82,7 +82,7 @@ class DiscordNotifier:
         stopped = set()
         if payload.get("worker_alert") and (
             not self.config.worker_alerts
-            or payload.get("channel_id", "default") != self.config.worker_alert_channel
+            or notice["channel_id"] not in self.config.worker_notification_channels
         ):
             return None
         if notice["target_id"]:
@@ -94,7 +94,7 @@ class DiscordNotifier:
                 or not state
                 or target.signature != state["signature"]
                 or payload.get("target_signature", state["signature"]) != state["signature"]
-                or payload.get("channel_id", "default") != target.channel_id
+                or notice["channel_id"] not in target.notification_channels
                 or stop_info(target, self.store.target_schedule(target), self.clock())[
                     "stop_reason"
                 ]
@@ -198,7 +198,7 @@ class DiscordNotifier:
             )
             if not notice:
                 break
-            url = urls[notice["payload"].get("channel_id", "default")]
+            url = urls[notice["channel_id"]]
             payload = self._format(notice)
             if payload is None:
                 self.store.finish_notice(notice, self.clock(), "CANCELLED")
