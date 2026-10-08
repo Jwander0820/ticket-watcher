@@ -385,9 +385,14 @@ class Watcher:
                 observed_keys.add(item.item_key)
                 previous = existing.get(item.item_key)
                 valid = item.status != TicketStatus.UNKNOWN
-                last_valid = (
-                    item.status.value if valid else previous["last_valid"] if previous else None
-                )
+                previous_status = previous["last_valid"] if previous else None
+                if previous_status == "SOLD_OUT" and observation.granularity in {"AREA", "PRODUCT"}:
+                    # Older inner-page observations folded unavailable into SOLD_OUT.
+                    # Recover that baseline without reporting a new transition on upgrade.
+                    previous_details = json.loads(previous["details"])
+                    if previous_details.get("availability_text") == "暫無票券":
+                        previous_status = "TEMPORARILY_UNAVAILABLE"
+                last_valid = item.status.value if valid else previous_status
                 valid_at = now if valid else previous["valid_at"] if previous else None
                 sequence = previous["release_sequence"] if previous else 0
                 if (
@@ -395,12 +400,12 @@ class Watcher:
                     and not target_stopped
                     and item.session_id not in stopped
                     and previous
-                    and previous["last_valid"]
-                    and previous["last_valid"] != item.status
+                    and previous_status
+                    and previous_status != item.status
                 ):
                     change = {
                         "item_key": item.item_key,
-                        "previous": previous["last_valid"],
+                        "previous": previous_status,
                         "current": item.status.value,
                         "previous_observed_at": previous["valid_at"],
                         "observed_at": now,
@@ -409,15 +414,14 @@ class Watcher:
                     }
                     changes.append(change)
                     if (
-                        previous["last_valid"] in {"SOLD_OUT", "TEMPORARILY_UNAVAILABLE"}
+                        previous_status in {"SOLD_OUT", "TEMPORARILY_UNAVAILABLE"}
                         and item.status == TicketStatus.AVAILABLE
                     ):
                         sequence += 1
                         releases.append({**change, "release_sequence": sequence})
                     elif (
-                        previous["last_valid"] == "SOLD_OUT"
+                        previous_status == "SOLD_OUT"
                         and item.status == TicketStatus.TEMPORARILY_UNAVAILABLE
-                        and observation.granularity == "SESSION"
                     ):
                         hints.append(change)
                 if valid and item.status != TicketStatus.AVAILABLE:
@@ -461,8 +465,19 @@ class Watcher:
             )
             self.store.cancel_unavailable(db, target.id, unavailable)
             self.store.cancel_unavailable(db, target.id, no_hints, kind="RELEASE_HINT")
+            # Fast polling follows the current signal, even without a prior
+            # sold-out baseline.
+            temporarily_unavailable = not target_stopped and any(
+                item.session_id not in stopped
+                and item.status != TicketStatus.UNKNOWN
+                and (
+                    item.status == TicketStatus.TEMPORARILY_UNAVAILABLE
+                    or item.availability_text == "暫無票券"
+                )
+                for item in observation.items
+            )
             active_until, no_available = old["active_until"], old["no_available"]
-            if releases or hints:
+            if releases or hints or temporarily_unavailable:
                 active_until, no_available = now + self.config.active_window, 0
             elif complete:
                 no_available = (
@@ -569,7 +584,7 @@ class Watcher:
                     {
                         "event_name": observation.event_name,
                         "public_url": observation.public_url,
-                        "granularity": "SESSION",
+                        "granularity": observation.granularity,
                         "changes": hints,
                         "signal": "暫無票券",
                     },

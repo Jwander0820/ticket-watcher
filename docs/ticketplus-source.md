@@ -44,7 +44,9 @@
 
 外頁由 `soldout` 轉為 `unavailable` 依使用者的手動刷票經驗建立 `RELEASE_HINT`，不建立確認有票的 `RELEASE`。當日實測尚未觀測到此轉換；「曾釋票」的推論不能只靠一個 `unavailable` 快照證實。`lock` 與 `unavailable` 分開處理。
 
-內頁使用場次的 `ticketArea` 布林欄位選來源：有票區讀 `ticketArea`，無票區讀 `product`。不能只讀 YUURI 的 product：該活動的 productLimit=false 且沒有 count，真正的票區狀態在 ticketArea。內頁 `soldout`／`unavailable` 都標準化為 `SOLD_OUT`；`onsale` 且限制數量時，count=0 為售完，正數為有票，缺失或無效數量為 UNKNOWN。
+內頁使用場次的 `ticketArea` 布林欄位選來源：有票區讀 `ticketArea`，無票區讀 `product`。不能只讀 YUURI 的 product：該活動的 productLimit=false 且沒有 count，真正的票區狀態在 ticketArea。內頁 `soldout` 標準化為 `SOLD_OUT`，`unavailable` 自 2026-10-08 起標準化為 `TEMPORARILY_UNAVAILABLE`，兩者數量皆為 0；`onsale` 且限制數量時，count=0 為售完，正數為有票，缺失或無效數量為 UNKNOWN。
+
+監控排程自 2026-10-08 起，依使用者的刷票規則將外頁／內頁的「暫無票券」作為快速模式觸發條件，首次觀測也適用，持續出現時重設期限且不累加無票次數。內頁從「已售完」轉為「暫無票券」時建立 RELEASE_HINT，通知含票區／票種資訊，不因此建立確認有票的 RELEASE；首次或持續相同狀態不額外通知。舊版已保存的「暫無票券」基準會保留，不因升級誤報新線索。
 
 內頁 UI 只在限定數量且 count≤20 時顯示「剩餘 N」；超過 20 或不限定數量顯示「熱賣中」。因此 `remaining_count` 僅提供 0～20 的頁面對應數量，其餘為 null。販售中案例的全票 count=999999 顯示「熱賣中」，不解讀為實際有 999999 張票；身障票 count=1 則保留「身障票」名稱，不能解讀成一般票剩餘 1 張。票區及票種不是逐席位置。
 

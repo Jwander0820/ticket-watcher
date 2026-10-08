@@ -15,7 +15,7 @@
 
 status、events、check、tick 以 `--config` 指向監控程序相同設定；query 也應使用相同 DB 才能共用節流。純 CLI Docker 使用 `docker compose exec ticket-watcher ticket-watcher --config /app/config.yaml <操作>`；UI Docker 使用 `docker compose -f compose.ui.yaml exec ticket-watcher-ui ticket-watcher --config /app/data/ui-config.yaml <操作>`。本機另一份 DB 不等於 VPS 狀態。
 
-`query.evaluation.release_detected` 固定為 null；只有監控比較並建立 RELEASE 事件，才可稱偵測到由無票轉有票。RELEASE_HINT／release_hint_detected 是外頁「暫無票券」線索，不能宣稱目前有票。CACHE 結果報出原始觀測時間與資料年齡；UNKNOWN 保留的最後有效值不能當作目前已確認有票。
+`query.evaluation.release_detected` 固定為 null；只有監控比較並建立 RELEASE 事件，才可稱偵測到由無票轉有票。RELEASE_HINT／release_hint_detected 是外頁場次或內頁票區／票種由已售完轉為「暫無票券」的線索，不能宣稱目前有正數餘票。CACHE 結果報出原始觀測時間與資料年齡；UNKNOWN 保留的最後有效值不能當作目前已確認有票。
 
 DEFERRED 表示本次未完成有效查詢／評估，需查看 reason 並遵守 next_allowed_at。它可能在發出部分請求後出現；QUERY_SUPERSEDED 代表租約失效的舊結果被捨棄，不能一概稱為未查網站。平台暫停必須先人工確認問題再用 resume，不能自動解除或以別的出口繼續打。UNSUPPORTED 表示所需粒度不支援，不能忽略 item_ids 改成查整場。
 
@@ -25,6 +25,6 @@ DEFERRED 表示本次未完成有效查詢／評估，需查看 reason 並遵守
 
 可貼給 AI 的提示詞：
 
-> 使用已安裝或已連接的 Ticket Watcher 查票工具。先查 capabilities；查看既有監控優先使用 status/events，臨時查票使用 query。只有我授權監控操作時才執行 check/tick。遵守共享 SQLite 與等待期限，不修改監控基準，不用對話記憶推論釋票。活動 URL 查場次，完整結果包含 order_url；購票 URL 查票區或票種，保留票種名稱與資格區分，不推論逐席位置。外頁釋票線索與內頁正數餘票分開報；熱賣中的數量不猜測。未知和過期資料明確標示原始時間。通知結果以 PENDING/SENT 和 message_id 為準，工具送通知時不重複發送。輸出預設摘要，必要時才分頁讀完整項目。
+> 使用已安裝或已連接的 Ticket Watcher 查票工具。先查 capabilities；查看既有監控優先使用 status/events，臨時查票使用 query。只有我授權監控操作時才執行 check/tick。遵守共享 SQLite 與等待期限，不修改監控基準，不用對話記憶推論釋票。活動 URL 查場次，完整結果包含 order_url；購票 URL 查票區或票種，保留票種名稱與資格區分，不推論逐席位置。外頁／內頁的暫無票券線索與確認有票分開報；熱賣中的數量不猜測。未知和過期資料明確標示原始時間。通知結果以 PENDING/SENT 和 message_id 為準，工具送通知時不重複發送。輸出預設摘要，必要時才分頁讀完整項目。
 
 外部 runner 必須實際定時觸發 tick；提示詞本身不是排程器。每小時 runner 無法實現 1～3 分鐘輪詢。一般建議 VPS 的 run 負責確定性排程，AI 按需要取用結果。

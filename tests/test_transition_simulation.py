@@ -56,19 +56,19 @@ def test_real_parser_transition_simulation(harness, monkeypatch, outer, via_unav
 
     if via_unavailable:
         result = observe("unavailable")
-        assert result.data["evaluation"]["release_hint_detected"] is outer
+        assert result.data["evaluation"]["release_hint_detected"]
         assert not result.data["evaluation"]["release_detected"]
-        assert len(h["requests"]) == int(outer)
+        assert len(h["requests"]) == 1
         observe("unavailable")
-        assert len(h["requests"]) == int(outer)
+        assert len(h["requests"]) == 1
 
     result = observe("onsale")
     assert result.data["evaluation"]["release_detected"]
     assert result.data["notification"]["status"] == "SENT"
-    expected = 1 + int(outer and via_unavailable)
+    expected = 1 + int(via_unavailable)
     assert len(h["requests"]) == expected
     observe("onsale")
     assert len(h["requests"]) == expected
-    if outer and via_unavailable:
+    if via_unavailable:
         assert "釋票線索" in json.loads(h["requests"][0].content)["content"]
     assert "釋票線索" not in json.loads(h["requests"][-1].content)["content"]

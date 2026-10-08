@@ -174,6 +174,23 @@ def test_unknown_session_time_keeps_remaining_target_running(harness):
     assert w.status("test").data["targets"][0]["effective_stop_at"] is None
 
 
+def test_started_session_unavailable_does_not_enable_or_renew_fast_mode(harness):
+    h, w = harness, harness["watcher"]
+    now = h["clock"]()
+    scheduled_source(h, {"s000000001": now - 1, "s000000002": now + 86400})
+    observe(h, "TEMPORARILY_UNAVAILABLE", "SOLD_OUT")
+    assert w.store.target("test")["mode"] == "NORMAL"
+    observe(h, "TEMPORARILY_UNAVAILABLE", "AVAILABLE")
+    expiry = w.store.target("test")["active_until"]
+    h["clock"].advance(60)
+    observe(h, "TEMPORARILY_UNAVAILABLE", "SOLD_OUT")
+    state = w.store.target("test")
+    assert state["active_until"] == expiry and state["no_available"] == 1
+    h["clock"].advance(60)
+    observe(h, "TEMPORARILY_UNAVAILABLE", "SOLD_OUT")
+    assert w.store.target("test")["mode"] == "NORMAL"
+
+
 def test_start_time_crossed_during_request_does_not_enqueue_release(harness):
     h, w = harness, harness["watcher"]
     deadline = h["clock"]() + 10

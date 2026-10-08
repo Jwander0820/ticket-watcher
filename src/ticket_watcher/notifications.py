@@ -134,6 +134,8 @@ class DiscordNotifier:
             if hint:
                 lines.append(
                     "外頁由售完轉為「暫無票券」，這是釋票線索；目前未確認正數餘票，請至內頁查看。"
+                    if payload["granularity"] == "SESSION"
+                    else f"{granularity}由已售完轉為「暫無票券」，這是釋票線索；目前未確認正數餘票，請至購票頁查看。"
                 )
             # All items were evaluated and saved; only the message presentation is bounded.
             for change in changes:
@@ -147,7 +149,7 @@ class DiscordNotifier:
                     f"本次偵測：{display(change['observed_at'])}"
                 )
                 if payload["granularity"] != "SESSION":
-                    line += f"\n項目：{item['name'][:120]} ({item['item_key']})"
+                    line += f"\n{granularity}：{item['name'][:120]} ({item['item_key']})"
                     if item.get("price") is not None:
                         line += f"｜票價：{item['price']}"
                     if item.get("availability_text"):

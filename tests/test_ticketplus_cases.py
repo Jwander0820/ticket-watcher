@@ -157,7 +157,7 @@ def test_inventory_count_matches_page_threshold_and_rejects_bad_data(
 def test_unavailable_inventory_cannot_report_positive_count():
     assert inventory_status(
         {"status": "unavailable", "productLimit": True, "count": 1}, is_area=False
-    ) == ("SOLD_OUT", "暫無票券", 0)
+    ) == ("TEMPORARILY_UNAVAILABLE", "暫無票券", 0)
 
 
 @pytest.mark.parametrize("selected", [0, 1, 110])
@@ -234,6 +234,44 @@ def test_outer_unavailable_hint_is_distinct_deduplicated_and_can_be_confirmed(ha
         and not confirmed.data["evaluation"]["release_hint_detected"]
     )
     assert len(harness["requests"]) == 2
+
+
+@pytest.mark.parametrize(
+    "granularity,event", [("SESSION", SALE), ("AREA", YUURI), ("PRODUCT", SALE)]
+)
+def test_first_unavailable_from_real_parser_enables_fast_mode(harness, granularity, event):
+    h, w = harness, harness["watcher"]
+    h["clock"].now = datetime.fromisoformat("2026-10-06T12:00:00+08:00").timestamp()
+
+    class UnavailableTransport(CaseTransport):
+        async def get_json(self, url, params):
+            response = await super().get_json(url, params)
+            for rows in response.get("result", {}).values():
+                for row in rows:
+                    row["status"] = "unavailable"
+            return response
+
+    transport = UnavailableTransport(h, event)
+    url = f"https://ticketplus.com.tw/activity/{event}"
+    if granularity != "SESSION":
+        url = (
+            f"https://ticketplus.com.tw/order/{event}/{transport.case['sessions'][0]['sessionId']}"
+        )
+    target = Target("test", "test", url)
+    w.config = replace(h["config"], targets=(target,))
+    w.adapter = TicketPlusAdapter(transport)
+    for _ in range(3):
+        result = asyncio.run(w.check("test", immediate=True))
+        assert result.data["granularity"] == granularity and result.data["complete"]
+        assert not result.data["evaluation"]["release_detected"]
+        assert not result.data["evaluation"]["release_hint_detected"]
+        assert set(result.data["summary"]) == {"TEMPORARILY_UNAVAILABLE"}
+        state = w.store.target("test")
+        assert state["mode"] == "ACTIVE" and state["no_available"] == 0
+        assert state["active_until"] == h["clock"]() + h["config"].active_window
+        assert state["next_check"] == h["clock"]() + 60
+        h["clock"].now = state["next_check"]
+    assert not w.events().data["events"] and not h["requests"]
 
 
 def test_hint_queue_cancels_when_soldout_returns(harness, monkeypatch):

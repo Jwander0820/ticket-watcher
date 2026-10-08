@@ -81,15 +81,18 @@ def test_network_failure_is_unknown_and_restart_preserves_baseline(harness):
         other.store.close()
 
 
-def test_query_does_not_change_baseline_or_events(harness):
+@pytest.mark.parametrize("status", ["AVAILABLE", "TEMPORARILY_UNAVAILABLE"])
+def test_query_does_not_change_baseline_or_events(harness, status):
     h = harness
     check(h, "SOLD_OUT")
     before = h["watcher"].store.items("test")
-    h["source"].push("AVAILABLE")
+    schedule = h["watcher"].store.target("test")
+    h["source"].push(status)
     result = asyncio.run(h["watcher"].query(URL))
     assert result.data["evaluation"] == {"performed": False, "release_detected": None}
     assert result.data["notification"]["status"] == "NOT_APPLICABLE"
     assert before == h["watcher"].store.items("test")
+    assert schedule == h["watcher"].store.target("test")
     assert not h["watcher"].events().data["events"]
     assert check(h, "AVAILABLE").data["evaluation"]["release_detected"]
 
@@ -145,6 +148,61 @@ def test_active_expires_even_when_tickets_stay_available(harness):
     h["clock"].advance(1801)
     check(h, "AVAILABLE")
     assert h["watcher"].store.target("test")["mode"] == "NORMAL"
+
+
+@pytest.mark.parametrize("baseline", [None, "SOLD_OUT", "AVAILABLE", "UPCOMING", "UNKNOWN"])
+def test_unavailable_enters_fast_mode_without_requiring_soldout_baseline(harness, baseline):
+    h, w = harness, harness["watcher"]
+    if baseline:
+        check(h, baseline, complete=baseline != "UNKNOWN")
+    result = check(h, "TEMPORARILY_UNAVAILABLE", "SOLD_OUT")
+    state = w.store.target("test")
+    assert state["mode"] == "ACTIVE" and state["no_available"] == 0
+    assert state["active_until"] == h["clock"]() + h["config"].active_window
+    assert state["next_check"] == h["clock"]() + 60
+    assert not result.data["evaluation"]["release_detected"]
+    assert result.data["evaluation"]["release_hint_detected"] is (baseline == "SOLD_OUT")
+    if baseline is None:
+        assert not w.events().data["events"]
+
+
+def test_repeated_unavailable_renews_fast_mode_and_real_empty_checks_exit(harness):
+    h, w = harness, harness["watcher"]
+    check(h, "TEMPORARILY_UNAVAILABLE")
+    expiry = w.store.target("test")["active_until"]
+    check(h, "SOLD_OUT")
+    assert w.store.target("test")["no_available"] == 1
+    check(h, "TEMPORARILY_UNAVAILABLE")
+    assert w.store.target("test")["no_available"] == 0
+    for _ in range(3):
+        result = check(h, "TEMPORARILY_UNAVAILABLE")
+        assert not result.data["evaluation"]["release_hint_detected"]
+        assert w.store.target("test")["no_available"] == 0
+    h["clock"].now = expiry + 1
+    check(h, "TEMPORARILY_UNAVAILABLE")
+    state = w.store.target("test")
+    assert state["mode"] == "ACTIVE"
+    assert state["active_until"] == h["clock"]() + h["config"].active_window
+    assert state["next_check"] == h["clock"]() + 60
+    check(h, "SOLD_OUT")
+    assert w.store.target("test")["mode"] == "ACTIVE"
+    check(h, "SOLD_OUT")
+    state = w.store.target("test")
+    assert state["mode"] == "NORMAL" and state["active_until"] is None
+    assert state["next_check"] == h["clock"]() + 300
+
+
+def test_unknown_does_not_renew_last_unavailable_signal(harness):
+    h, w = harness, harness["watcher"]
+    check(h, "TEMPORARILY_UNAVAILABLE")
+    expiry = w.store.target("test")["active_until"]
+    check(h, "UNKNOWN", complete=False)
+    state = w.store.target("test")
+    assert state["active_until"] == expiry and state["no_available"] == 0
+    assert w.store.items("test")[0]["last_valid"] == "TEMPORARILY_UNAVAILABLE"
+    h["clock"].now = expiry + 1
+    check(h, "UNKNOWN", complete=False)
+    assert w.store.target("test")["mode"] == "NORMAL"
 
 
 def test_partial_missing_item_cannot_count_as_complete_empty_check(harness):

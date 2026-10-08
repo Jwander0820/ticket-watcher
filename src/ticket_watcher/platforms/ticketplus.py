@@ -314,8 +314,10 @@ def inventory_status(row: dict, *, is_area: bool) -> tuple[TicketStatus, str | N
         return TicketStatus.UNKNOWN, None, None
     if row.get("hidden") is True:
         return TicketStatus.PAUSED, "未公開販售", None
-    if raw in {"soldout", "unavailable"}:
-        return TicketStatus.SOLD_OUT, "暫無票券" if raw == "unavailable" else "已售完", 0
+    if raw == "soldout":
+        return TicketStatus.SOLD_OUT, "已售完", 0
+    if raw == "unavailable":
+        return TicketStatus.TEMPORARILY_UNAVAILABLE, "暫無票券", 0
     if raw != "onsale":
         return STATUS_MAP.get(raw, TicketStatus.UNKNOWN), None, None
     limited = row.get("ticketAreaLimit" if is_area else "productLimit")
