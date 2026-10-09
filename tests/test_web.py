@@ -166,6 +166,9 @@ def test_channels_are_private_and_test_delivery_routes_to_selected_channel(tmp_p
             assert len(requests) == 1 and str(requests[0].url).split("?")[0] == HOOK
             assert HOOK not in json.dumps(c.watcher.events(detail=True).to_dict())
             assert json.loads(requests[0].content)["allowed_mentions"] == {"parse": []}
+            assert json.loads(requests[0].content)["content"] == (
+                "✅ Ticket Watcher 測試通知\n此頻道已成功連接。"
+            )
 
     asyncio.run(scenario())
 

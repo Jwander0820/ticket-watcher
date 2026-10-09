@@ -28,7 +28,7 @@ log = logging.getLogger(__name__)
 STATIC = Path(__file__).with_name("static")
 WORKER_RETRY_SECONDS = (5, 15, 30, 60, 300)
 WORKER_STABLE_SECONDS = 60
-WORKER_FAILURE_MESSAGE = "監控服務意外中止，正在自動重試；重試間隔依序為 5、15、30、60 秒，之後每 5 分鐘一次。穩定恢復後會另行通知。"
+WORKER_FAILURE_MESSAGE = "正在自動重試，暫時無法持續查票。"
 SETTINGS = {
     "polling": {
         "normal_interval_seconds",
@@ -151,7 +151,7 @@ class Controller:
                         self.runner_error = None
                         self._worker_event(
                             incident + "-recovered",
-                            "監控服務已恢復，並持續運作至少 60 秒。原有票況基準、等待期限與平台暫停狀態均保留。",
+                            "已穩定運作 60 秒。",
                         )
                         incident, failures = None, 0
                     await worker
@@ -213,7 +213,13 @@ class Controller:
                         None,
                         "SYSTEM",
                         self.watcher.clock(),
-                        {"message": message, "worker_alert": True},
+                        {
+                            "message": message,
+                            "worker_alert": True,
+                            "title": "✅ Ticket Watcher 監控恢復"
+                            if event_id.endswith("-recovered")
+                            else "🔴 Ticket Watcher 監控中止",
+                        },
                         self.config.notification_ttl,
                         self.config.worker_alerts,
                         channel_ids=self.config.worker_notification_channels,
@@ -612,7 +618,7 @@ async def action(request):
                     None,
                     "SYSTEM",
                     c.watcher.clock(),
-                    {"message": "測試通知：此頻道已連接 Ticket Watcher。"},
+                    {"title": "✅ Ticket Watcher 測試通知", "message": "此頻道已成功連接。"},
                     c.config.notification_ttl,
                     True,
                     channel_id=ident,

@@ -13,6 +13,7 @@ from . import __version__
 from .config import Config, Target
 from .health import health_snapshot
 from .models import Observation, Result, SourceError, TicketStatus, timestamp, utcnow
+from .notification_text import SIGNAL_STATUSES, ticket_parts
 from .notifications import DiscordNotifier
 from .platforms.ticketplus import TicketPlusAdapter
 from .query_log import QueryLog
@@ -198,14 +199,24 @@ class Watcher:
             self.store.release(owner)
             self.wake()
 
-    def _system(self, db, message: str, target_id: str | None = None):
+    def _system(self, db, message: str, target_id: str | None = None, *, title=None):
+        payload = {"message": message}
+        if title:
+            state = self.store.target(target_id) if target_id else None
+            payload["title"] = title
+            if target_id:
+                payload["event_name"] = (
+                    state["event_name"]
+                    if state and state["event_name"]
+                    else self._target(target_id).name
+                )
         self.store.enqueue(
             db,
             str(uuid.uuid4()),
             target_id,
             "SYSTEM",
             self.clock(),
-            {"message": message},
+            payload,
             self.config.notification_ttl,
             self.config.system_alerts,
             channel_ids=self._target(target_id).notification_channels
@@ -237,7 +248,10 @@ class Watcher:
                 db.execute("UPDATE platform SET paused_reason='BLOCKED' WHERE id='ticketplus'")
                 if target:
                     self._system(
-                        db, "TicketPlus 拒絕存取或要求驗證，平台查詢已暫停，需人工處理。", target.id
+                        db,
+                        "TicketPlus 拒絕存取或要求驗證，需人工處理。",
+                        target.id,
+                        title="⛔ 查詢已暫停",
                     )
             if error.code == "RATE_LIMITED" or (target is None and error.code == "NETWORK"):
                 failures = platform["failures"] + 1
@@ -291,11 +305,17 @@ class Watcher:
                 if (failures == 1 and error.code != "BLOCKED") or (
                     pause and not old["paused_reason"]
                 ):
+                    reason = {
+                        "NETWORK": "網路連線失敗",
+                        "RATE_LIMITED": "TicketPlus 限制查詢頻率",
+                        "PARSE": "無法解析票況",
+                        "UNSUPPORTED": "不支援此資料來源",
+                    }.get(error.code, "無法完成查詢")
                     self._system(
                         db,
-                        f"目標 {target.id} 查詢異常：{error.code}"
-                        + ("，已暫停。" if pause else "，保留最後有效票況並退避。"),
+                        reason + ("，需人工檢查。" if pause else "，稍後自動重試。"),
                         target.id,
+                        title="⛔ 查詢已暫停" if pause else "⚠️ 查詢異常",
                     )
         status = "UNSUPPORTED" if error.code == "UNSUPPORTED" else "FAILED"
         log.warning(
@@ -358,7 +378,7 @@ class Watcher:
 
     def _apply(
         self, target: Target, observation: Observation, *, owner=None
-    ) -> tuple[list[dict], str | None, str | None]:
+    ) -> tuple[list[dict], list[str], list[str]]:
         now = observation.observed_at
         changes, releases, hints, unavailable, no_hints = [], [], [], set(), set()
         with self.store.transaction() as db:
@@ -532,13 +552,15 @@ class Watcher:
             if complete:
                 db.execute("UPDATE platform SET failures=0 WHERE id='ticketplus'")
             if complete and old["last_error"]:
-                self._system(db, f"目標 {target.id} 已恢復取得完整有效票況。", target.id)
+                self._system(db, "已恢復取得完整票況。", target.id, title="✅ 查詢恢復")
             if not complete and (old["parse_failures"] == 0 or pause):
                 self._system(
                     db,
-                    f"目標 {target.id} 票況資料不完整"
-                    + ("，已暫停。" if pause else "，保留缺失項目的最後有效票況。"),
+                    "連續無法解析完整票況，需人工檢查。"
+                    if pause
+                    else "部分票況無法確認，保留上次有效紀錄，稍後重試。",
                     target.id,
+                    title="⛔ 查詢已暫停" if pause else "⚠️ 票況不完整",
                 )
             notified_keys = {x["item_key"] for x in releases + hints}
             non_releases = [x for x in changes if x["item_key"] not in notified_keys]
@@ -553,46 +575,55 @@ class Watcher:
                         json.dumps({"changes": non_releases}, ensure_ascii=False),
                     ),
                 )
-            event_id = None
-            if releases:
-                event_id = str(uuid.uuid4())
-                self.store.enqueue(
-                    db,
-                    event_id,
-                    target.id,
-                    "RELEASE",
-                    now,
-                    {
-                        "event_name": observation.event_name,
-                        "public_url": observation.public_url,
-                        "granularity": observation.granularity,
-                        "changes": releases,
-                    },
-                    self.config.notification_ttl,
-                    True,
-                    channel_ids=target.notification_channels,
+            event_ids, hint_event_ids = [], []
+            sessions = dict.fromkeys(change["item"]["session_id"] for change in releases + hints)
+            order = 0
+            for session_id in sessions:
+                triggers = [c for c in releases + hints if c["item"]["session_id"] == session_id]
+                has_release = any(c["current"] == "AVAILABLE" for c in triggers)
+                has_hint = any(c["current"] == "TEMPORARILY_UNAVAILABLE" for c in triggers)
+                snapshot = sorted(
+                    (
+                        item.to_dict()
+                        for item in observation.items
+                        if item.session_id == session_id and item.status in SIGNAL_STATUSES
+                    ),
+                    key=lambda item: item["status"] != "AVAILABLE",
                 )
-            hint_event_id = None
-            if hints:
-                hint_event_id = str(uuid.uuid4())
-                self.store.enqueue(
-                    db,
-                    hint_event_id,
-                    target.id,
-                    "RELEASE_HINT",
-                    now,
-                    {
-                        "event_name": observation.event_name,
-                        "public_url": observation.public_url,
-                        "granularity": observation.granularity,
-                        "changes": hints,
-                        "signal": "暫無票券",
-                    },
-                    self.config.notification_ttl,
-                    True,
-                    channel_ids=target.notification_channels,
-                )
-        return changes, event_id, hint_event_id
+                payload = {
+                    "event_name": observation.event_name,
+                    "public_url": observation.public_url,
+                    "granularity": observation.granularity,
+                    "observed_at": now,
+                    "changes": triggers,
+                    "snapshot": snapshot,
+                }
+                parts = ticket_parts(payload, snapshot, self.config.timezone)
+                for part, items in enumerate(parts, 1):
+                    event_id = str(uuid.uuid4())
+                    self.store.enqueue(
+                        db,
+                        event_id,
+                        target.id,
+                        "RELEASE" if has_release else "RELEASE_HINT",
+                        now,
+                        {
+                            **payload,
+                            "display_keys": [item["item_key"] for item in items],
+                            "part": part,
+                            "parts": len(parts),
+                            "notification_order": order,
+                        },
+                        self.config.notification_ttl,
+                        True,
+                        channel_ids=target.notification_channels,
+                    )
+                    if has_release:
+                        event_ids.append(event_id)
+                    if has_hint:
+                        hint_event_ids.append(event_id)
+                    order += 1
+        return changes, event_ids, hint_event_ids
 
     async def check(
         self, ident: str, *, detail=False, limit=50, offset=0, immediate=False
@@ -611,9 +642,9 @@ class Watcher:
 
     def _notification_result(self, result: Result) -> Result:
         if result.execution_status == "COMPLETED":
-            result.data["notification"] = self.store.notification_status(result.data["event_id"])
+            result.data["notification"] = self.store.notification_status(result.data["event_ids"])
             result.data["hint_notification"] = self.store.notification_status(
-                result.data["hint_event_id"]
+                result.data["hint_event_ids"]
             )
         return result
 
@@ -677,7 +708,7 @@ class Watcher:
             except SourceError as error:
                 result = self._error(error, target, owner=owner)
             else:
-                changes, event_id, hint_event_id = self._apply(target, observation, owner=owner)
+                changes, event_ids, hint_event_ids = self._apply(target, observation, owner=owner)
                 result = Result(
                     result_source="LIVE",
                     data={
@@ -685,16 +716,18 @@ class Watcher:
                         "target_id": ident,
                         "evaluation": {
                             "performed": True,
-                            "release_detected": bool(event_id),
-                            "release_hint_detected": bool(hint_event_id),
+                            "release_detected": bool(event_ids),
+                            "release_hint_detected": bool(hint_event_ids),
                         },
                         "changes": changes[offset : offset + limit],
                         "changes_total": len(changes),
                         "changes_next_offset": offset + limit
                         if offset + limit < len(changes)
                         else None,
-                        "event_id": event_id,
-                        "hint_event_id": hint_event_id,
+                        "event_id": next(iter(event_ids), None),
+                        "hint_event_id": next(iter(hint_event_ids), None),
+                        "event_ids": event_ids,
+                        "hint_event_ids": hint_event_ids,
                         "complete": self.store.target(ident)["last_error"] is None,
                         "next_allowed_at": timestamp(self.store.target(ident)["next_check"]),
                         **self._stop_info(target),
@@ -704,7 +737,7 @@ class Watcher:
                     "checked target=%s complete=%s releases=%s requests=%d",
                     ident,
                     observation.complete,
-                    bool(event_id),
+                    bool(event_ids),
                     observation.request_count,
                 )
         except LeaseLost:
@@ -783,10 +816,14 @@ class Watcher:
             if not detail:
                 payload = event["payload"]
                 event["payload"] = {
-                    key: value for key, value in payload.items() if key != "changes"
+                    key: value
+                    for key, value in payload.items()
+                    if key not in {"changes", "snapshot", "display_keys"}
                 }
                 if "changes" in payload:
                     event["payload"]["changes_total"] = len(payload["changes"])
+                if "snapshot" in payload:
+                    event["payload"]["snapshot_total"] = len(payload["snapshot"])
         return Result(result_source="CACHE", data=page)
 
     async def tick(self) -> Result:

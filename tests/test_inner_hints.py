@@ -68,10 +68,11 @@ def test_inner_hint_sends_location_deduplicates_and_can_be_confirmed(inner_monit
     assert event["payload"]["granularity"] == granularity
     assert event["payload"]["changes"][0]["current"] == "TEMPORARILY_UNAVAILABLE"
     content = json.loads(h["requests"][0].content)["content"]
-    label = "票區" if granularity == "AREA" else "票種"
-    assert f"{label}由已售完轉為「暫無票券」" in content
-    assert f"{label}：{item['name']}" in content and f"票價：{item['price']}" in content
-    assert "未確認正數餘票" in content and "購票連結：https://ticketplus.com.tw/order/" in content
+    name = "特A區" if granularity == "AREA" else "全票"
+    assert content.startswith("🟡 暫無票券｜")
+    assert f"{name}｜${item['price']:,}｜暫無票券" in content
+    assert "[前往購票](https://ticketplus.com.tw/order/" in content
+    assert content.count("https://") == 1
     assert "外頁" not in content
     for _ in range(3):
         assert not observe("unavailable").data["evaluation"]["release_hint_detected"]
@@ -79,7 +80,7 @@ def test_inner_hint_sends_location_deduplicates_and_can_be_confirmed(inner_monit
     result = observe("onsale")
     assert result.data["evaluation"]["release_detected"]
     assert result.data["notification"]["status"] == "SENT" and len(h["requests"]) == 2
-    assert "釋票線索" not in json.loads(h["requests"][1].content)["content"]
+    assert json.loads(h["requests"][1].content)["content"].startswith("🟢 有票｜")
     observe("soldout")
     assert observe("unavailable").data["evaluation"]["release_hint_detected"]
     assert len(h["requests"]) == 3
@@ -97,7 +98,7 @@ def test_inner_pending_hint_cancels_when_signal_disappears(inner_monitor, monkey
     asyncio.run(h["watcher"].notifier.deliver())
     assert h["watcher"].store.notification_status(event_id)["status"] == "CANCELLED"
     assert len(h["requests"]) == int(next_status == "onsale")
-    assert all("釋票線索" not in json.loads(r.content)["content"] for r in h["requests"])
+    assert all("🟡" not in json.loads(r.content)["content"] for r in h["requests"])
 
 
 def test_inner_unknown_preserves_soldout_and_pending_hint_baselines(inner_monitor, monkeypatch):

@@ -70,5 +70,5 @@ def test_real_parser_transition_simulation(harness, monkeypatch, outer, via_unav
     observe("onsale")
     assert len(h["requests"]) == expected
     if via_unavailable:
-        assert "釋票線索" in json.loads(h["requests"][0].content)["content"]
-    assert "釋票線索" not in json.loads(h["requests"][-1].content)["content"]
+        assert json.loads(h["requests"][0].content)["content"].startswith("🟡 暫無票券｜")
+    assert json.loads(h["requests"][-1].content)["content"].startswith("🟢 有票｜")

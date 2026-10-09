@@ -211,7 +211,8 @@ def test_order_product_release_compares_quantity_and_formats_ticket_name(harness
         and result.data["notification"]["status"] == "SENT"
     )
     text = json.loads(h["requests"][0].content)["content"]
-    assert "票種" in text and "身障票" in text and "剩餘 1" in text and "250" in text
+    assert "身障票｜$250｜剩 1 張" in text
+    assert text.startswith("🟢 有票｜")
 
 
 def test_outer_unavailable_hint_is_distinct_deduplicated_and_can_be_confirmed(harness, monkeypatch):
@@ -226,7 +227,7 @@ def test_outer_unavailable_hint_is_distinct_deduplicated_and_can_be_confirmed(ha
     assert hint.data["event_id"] is None and hint.data["hint_event_id"]
     assert hint.data["hint_notification"]["status"] == "SENT"
     text = json.loads(harness["requests"][0].content)["content"]
-    assert "釋票線索" in text and "未確認正數餘票" in text
+    assert text.startswith("🟡 暫無票券｜") and "🟢" not in text
     assert not check(harness, "TEMPORARILY_UNAVAILABLE").data["evaluation"]["release_hint_detected"]
     confirmed = check(harness, "AVAILABLE")
     assert (

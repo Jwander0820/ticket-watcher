@@ -68,6 +68,8 @@ docker compose -f compose.ui.yaml exec ticket-watcher-ui ticket-watcher --config
 
 CLI 操作結果預設輸出 JSON，日誌送 stderr；`--json` 可明確標記但不改變預設格式。`query`、`status`、`events`、`check` 支援 `--detail full --limit 50 --offset 0`。`limit` 為 1～500，`offset` 從 0 開始；分頁只縮減輸出，不縮減查票評估範圍。`events` 預設為摘要，`full` 才含完整變更內容。
 
+同一輪的通知按場次合併，過長時分則。`check` 的 `event_ids`、`hint_event_ids` 列出各類觸發涉及的全部通知事件；舊欄位 `event_id`、`hint_event_id` 保留為各清單第一筆，沒有對應觸發時為 `null`。同場次混合有票與暫無票券的觸發共用通知事件，因此兩個清單可能包含相同 ID。`notification`、`hint_notification` 彙總對應清單的送達狀態；`deliveries` 中以 `event_id` 與 `channel_id` 識別每則、每個頻道的結果，多筆送達時需查看各筆的 `message_id`。
+
 | 退出碼 | 意義 |
 | --- | --- |
 | `0` | 操作完成；仍需檢查 `complete`、各目標結果與通知狀態 |

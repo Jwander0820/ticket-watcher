@@ -3,19 +3,20 @@ import json
 import math
 import os
 import re
-from datetime import datetime
 from urllib.parse import urlsplit
-from zoneinfo import ZoneInfo
 
 import httpx
 
 from .config import Config
 from .http_body import ACCEPT_ENCODING, DISCORD_BODY_LIMIT, ResponseBodyError, read_body
 from .models import utcnow
+from .notification_text import discord_length, plain, ticket_content
 from .private_io import read_webhooks
 from .schedule import stop_info, stopped_sessions
 from .storage import Store
 from .transport import retry_after
+
+SUPPRESS_EMBEDS = 1 << 2
 
 
 def webhook_url(env_name: str) -> str | None:
@@ -102,75 +103,76 @@ class DiscordNotifier:
                 return None
             stopped = stopped_sessions(target, self.store.target_schedule(target), self.clock())
         if notice["kind"] == "SYSTEM":
-            content = f"Ticket Watcher｜{payload['message']}\n事件：{notice['event_id']}"
+            title = payload.get("title", "Ticket Watcher")
+            if payload.get("event_name"):
+                title += "｜" + plain(payload["event_name"])
+            content = f"{title}\n{payload['message']}"
         else:
-            hint = notice["kind"] == "RELEASE_HINT"
-            expected = "TEMPORARILY_UNAVAILABLE" if hint else "AVAILABLE"
             states = {x["item_key"]: x for x in self.store.items(notice["target_id"])}
             excluded = set(json.loads(notice["excluded_items"]))
+            expected = (
+                "TEMPORARILY_UNAVAILABLE" if notice["kind"] == "RELEASE_HINT" else "AVAILABLE"
+            )
             changes = [
                 x
                 for x in payload["changes"]
                 if x["item_key"] not in excluded
                 and x["item"]["session_id"] not in stopped
                 and x["item_key"] in states
-                and states[x["item_key"]]["last_valid"] == expected
+                and states[x["item_key"]]["last_valid"] == x.get("current", expected)
             ]
             if not changes:
                 return None
-            zone = ZoneInfo(self.config.timezone)
-
-            def display(value):
-                return datetime.fromtimestamp(value, zone).strftime("%Y/%m/%d %H:%M:%S %Z")
-
-            label = "釋票線索：暫無票券" if hint else "偵測到可購票"
-            granularity = {"SESSION": "場次", "AREA": "票區", "PRODUCT": "票種"}.get(
-                payload["granularity"], payload["granularity"]
-            )
-            lines = [
-                f"Ticket Watcher｜{label}\n活動：{payload['event_name'][:180]}",
-                f"監控粒度：{granularity}｜本輪項目：{len(changes)}",
-            ]
-            if hint:
-                lines.append(
-                    "外頁由售完轉為「暫無票券」，這是釋票線索；目前未確認正數餘票，請至內頁查看。"
-                    if payload["granularity"] == "SESSION"
-                    else f"{granularity}由已售完轉為「暫無票券」，這是釋票線索；目前未確認正數餘票，請至購票頁查看。"
-                )
-            # All items were evaluated and saved; only the message presentation is bounded.
-            for change in changes:
-                item = change["item"]
-                current_label = "暫無票券（線索）" if hint else "可購買"
-                line = (
-                    f"\n場次：{(item.get('session_name') or item['name'])[:120]} ({item['session_id']})\n"
-                    f"日期／時間：{item.get('date') or '來源未提供'} {item.get('time') or ''}\n"
-                    f"場館：{item.get('venue') or '來源未提供'}\n"
-                    f"狀態：無票 → {current_label}\n上次無票觀測：{display(change['previous_observed_at'])}\n"
-                    f"本次偵測：{display(change['observed_at'])}"
-                )
-                if payload["granularity"] != "SESSION":
-                    line += f"\n{granularity}：{item['name'][:120]} ({item['item_key']})"
-                    if item.get("price") is not None:
-                        line += f"｜票價：{item['price']}"
-                    if item.get("availability_text"):
-                        line += f"\n票況：{item['availability_text']}"
-                if hint and item.get("order_url"):
-                    line += f"\n場次內頁：{item['order_url']}"
-                if change["monitoring_gap"]:
-                    line += "\n中間存在超過 45 分鐘的監控空窗"
-                if sum(len(x) for x in lines) + len(line) > 1400:
-                    lines.append("\n更多項目請使用 events 查閱完整紀錄。")
-                    break
-                lines.append(line)
-            lines.extend(
-                [
-                    f"\n購票連結：{payload['public_url']}",
-                    f"事件：{notice['event_id']}",
-                    "這是查詢當下的觀測結果，不代表已保留票券或精確放票時間。",
+            sessions = dict.fromkeys(x["item"]["session_id"] for x in changes)
+            snapshot = payload.get("snapshot", [x["item"] for x in changes])
+            contents = []
+            for session_id in sessions:
+                items = [
+                    item
+                    for item in snapshot
+                    if item["session_id"] == session_id
+                    and item["item_key"] not in excluded
+                    and item["item_key"] in states
+                    and states[item["item_key"]]["last_valid"] == item["status"]
                 ]
-            )
-            content = "\n".join(lines)
-        return {"content": content[:2000], "allowed_mentions": {"parse": []}}
+                items.sort(key=lambda item: item["status"] != "AVAILABLE")
+                displayed = [
+                    item
+                    for item in items
+                    if "display_keys" not in payload or item["item_key"] in payload["display_keys"]
+                ]
+                if not displayed:
+                    continue
+                contents.append(
+                    ticket_content(
+                        {
+                            **payload,
+                            "observed_at": payload.get(
+                                "observed_at", max(x["observed_at"] for x in changes)
+                            ),
+                        },
+                        displayed,
+                        self.config.timezone,
+                        session_items=items,
+                    )
+                )
+            if not contents:
+                return None
+            content = "\n\n".join(contents)
+            # New notices are durably partitioned before enqueueing. A legacy
+            # queued event can contain many sessions in a single delivery.
+            if discord_length(content) > 2000:
+                content = contents[0]
+                for section in contents[1:]:
+                    if discord_length(content + "\n\n" + section) > 1900:
+                        content += "\n更多項目請至控制台事件紀錄查看。"
+                        break
+                    content += "\n\n" + section
+        return {
+            "content": content[:2000],
+            "allowed_mentions": {"parse": []},
+            "flags": SUPPRESS_EMBEDS,
+        }
 
     async def deliver(self, max_messages: int = 10, *, event_id: str | None = None) -> dict:
         try:

@@ -300,12 +300,21 @@ class Store:
         rows = db.execute(
             """SELECT o.event_id,o.channel_id,o.excluded_items,e.payload
              FROM outbox o JOIN events e ON e.id=o.event_id
-         WHERE e.target_id=? AND e.kind=? AND o.status IN ('PENDING','INFLIGHT')""",
-            (target_id, kind),
+          WHERE e.target_id=? AND e.kind IN ('RELEASE','RELEASE_HINT')
+          AND o.status IN ('PENDING','INFLIGHT')""",
+            (target_id,),
         ).fetchall()
         for row in rows:
             payload = json.loads(row["payload"])
-            excluded = set(json.loads(row["excluded_items"])) | unavailable
+            expected = "AVAILABLE" if kind == "RELEASE" else "TEMPORARILY_UNAVAILABLE"
+            candidates = {
+                change["item_key"] for change in payload["changes"] if change["current"] == expected
+            } | {
+                item["item_key"]
+                for item in payload.get("snapshot", [])
+                if item["status"] == expected
+            }
+            excluded = set(json.loads(row["excluded_items"])) | (unavailable & candidates)
             remaining = [x for x in payload["changes"] if x["item_key"] not in excluded]
             db.execute(
                 "UPDATE outbox SET excluded_items=? WHERE event_id=? AND channel_id=?",
@@ -423,7 +432,8 @@ class Store:
              FROM outbox o JOIN events e ON e.id=o.event_id
              WHERE o.status='PENDING' AND o.next_attempt<=?"""
                 + extra
-                + " ORDER BY o.next_attempt,e.created_at,o.event_id,o.channel_id LIMIT 1",
+                + " ORDER BY o.next_attempt,e.created_at,"
+                "coalesce(json_extract(e.payload,'$.notification_order'),0),o.event_id,o.channel_id LIMIT 1",
                 params,
             ).fetchone()
             if not row:
@@ -487,13 +497,14 @@ class Store:
             )
             return bool(updated)
 
-    def notification_status(self, event_id: str | None) -> dict:
-        if event_id is None:
+    def notification_status(self, event_id: str | list[str] | None) -> dict:
+        ids = list(dict.fromkeys(event_id)) if isinstance(event_id, list) else [event_id]
+        if not ids or ids == [None]:
             return {"status": "NOT_REQUIRED"}
         rows = self.connection.execute(
-            """SELECT channel_id,status,message_id,attempts,last_error FROM outbox
-             WHERE event_id=? ORDER BY channel_id""",
-            (event_id,),
+            "SELECT event_id,channel_id,status,message_id,attempts,last_error FROM outbox "
+            "WHERE event_id IN (" + ",".join("?" for _ in ids) + ") ORDER BY channel_id,event_id",
+            ids,
         ).fetchall()
         if not rows:
             return {"status": "NOT_REQUIRED"}

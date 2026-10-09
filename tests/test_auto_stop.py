@@ -219,7 +219,7 @@ def test_queued_notification_omits_started_session(harness, monkeypatch):
     enable(h, monkeypatch)
     asyncio.run(w.notifier.deliver())
     content = h["requests"][0].read().decode()
-    assert "s000000001" not in content and "s000000002" in content
+    assert "場次 1" not in content and "場次 2" in content
 
 
 def test_auto_stop_can_be_disabled_without_resetting_baseline(harness):

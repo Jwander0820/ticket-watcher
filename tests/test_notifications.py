@@ -17,14 +17,15 @@ def test_release_immediately_sends_wait_true_and_saves_message_id(harness, monke
     check(h, "SOLD_OUT", "SOLD_OUT")
     result = check(h, "AVAILABLE", "AVAILABLE")
     assert result.data["notification"]["status"] == "SENT"
-    assert result.data["notification"]["message_id"] == "123456"
-    assert len(h["requests"]) == 1
-    assert h["requests"][0].url.params["wait"] == "true"
-    body = json.loads(h["requests"][0].content)
-    assert body["allowed_mentions"] == {"parse": []}
-    assert "場次 1" in body["content"] and "場次 2" in body["content"]
+    assert all(d["message_id"] == "123456" for d in result.data["notification"]["deliveries"])
+    assert len(h["requests"]) == 2
+    for index, request in enumerate(h["requests"], 1):
+        assert request.url.params["wait"] == "true"
+        body = json.loads(request.content)
+        assert body["allowed_mentions"] == {"parse": []}
+        assert f"場次 {index}" in body["content"]
     check(h, "AVAILABLE", "AVAILABLE")
-    assert len(h["requests"]) == 1
+    assert len(h["requests"]) == 2
 
 
 def test_discord_failure_does_not_undo_ticket_state(harness, monkeypatch):
@@ -77,7 +78,7 @@ def test_partial_notification_only_sends_still_available_items(harness, monkeypa
     asyncio.run(h["watcher"].notifier.deliver())
     body = json.loads(h["requests"][0].content)
     assert "場次 1" not in body["content"] and "場次 2" in body["content"]
-    assert len(releases(h["watcher"])[0]["payload"]["changes"]) == 2
+    assert sum(len(event["payload"]["changes"]) for event in releases(h["watcher"])) == 2
 
 
 def test_expired_notification_is_not_sent(harness, monkeypatch):
@@ -109,10 +110,13 @@ def test_large_release_notification_is_bounded(harness, monkeypatch):
     enable(h, monkeypatch)
     check(h, *("SOLD_OUT" for _ in range(80)))
     check(h, *("AVAILABLE" for _ in range(80)))
-    content = json.loads(h["requests"][0].content)["content"]
-    assert len(content) <= 2000
-    assert "80" in content and "更多項目" in content
-    assert len(releases(h["watcher"])[0]["payload"]["changes"]) == 80
+    asyncio.run(h["watcher"].notifier.deliver(max_messages=100))
+    messages = [json.loads(request.content)["content"] for request in h["requests"]]
+    assert len(messages) == 80 and all(len(content) <= 2000 for content in messages)
+    assert all(f"場次 {index} " in messages[index - 1] for index in range(1, 81))
+    assert h["source"].calls == 2
+    events = h["watcher"].events(detail=True, limit=100).data["events"]
+    assert sum(len(event["payload"]["changes"]) for event in events) == 80
 
 
 def test_ack_without_message_id_does_not_claim_sent(harness, monkeypatch):

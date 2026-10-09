@@ -135,6 +135,10 @@ def test_worker_restarts_after_failure_without_losing_state_or_spamming(
             assert {e["notification_status"] for e in events} == {"SENT"}
             assert len(requests) == 2
             assert all(str(r.url).split("?")[0] == HOOK for r in requests)
+            assert [json.loads(r.content)["content"] for r in requests] == [
+                "🔴 Ticket Watcher 監控中止\n正在自動重試，暫時無法持續查票。",
+                "✅ Ticket Watcher 監控恢復\n已穩定運作 60 秒。",
+            ]
             assert "must_not_leak_private_exception" not in caplog.text
             assert HOOK not in json.dumps(c.state())
         finally:

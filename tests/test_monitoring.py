@@ -309,7 +309,9 @@ def test_pagination_does_not_reduce_evaluation(harness):
     result = asyncio.run(h["watcher"].check("test", detail=True, limit=2))
     assert len(result.data["changes"]) == 2 and result.data["changes_total"] == 80
     assert result.data["page"]["total"] == 80
-    assert len(releases(h["watcher"])[0]["payload"]["changes"]) == 80
+    events = h["watcher"].events(detail=True, limit=100).data["events"]
+    assert sum(len(event["payload"]["changes"]) for event in events) == 80
+    assert len(result.data["event_ids"]) == 80
     assert len(h["watcher"].store.items("test")) == 80
 
 

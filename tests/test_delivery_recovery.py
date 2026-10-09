@@ -100,6 +100,11 @@ def test_events_default_to_summary_and_full_details_are_explicit(harness):
     h = harness
     check(h, "SOLD_OUT", "SOLD_OUT")
     check(h, "AVAILABLE", "AVAILABLE")
-    summary = h["watcher"].events().data["events"][0]["payload"]
-    assert summary["changes_total"] == 2 and "changes" not in summary
-    assert len(h["watcher"].events(detail=True).data["events"][0]["payload"]["changes"]) == 2
+    summaries = [event["payload"] for event in h["watcher"].events().data["events"]]
+    assert sum(summary["changes_total"] for summary in summaries) == 2
+    assert all(
+        not {"changes", "snapshot", "display_keys"} & summary.keys() for summary in summaries
+    )
+    details = [event["payload"] for event in h["watcher"].events(detail=True).data["events"]]
+    assert sum(len(payload["changes"]) for payload in details) == 2
+    assert all(payload["snapshot"] for payload in details)
