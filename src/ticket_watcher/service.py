@@ -12,6 +12,7 @@ import httpx
 from . import __version__
 from .config import Config, Target
 from .health import health_snapshot
+from .http_diagnostics import safe_http_diagnostic
 from .models import Observation, Result, SourceError, TicketStatus, timestamp, utcnow
 from .notification_text import SIGNAL_STATUSES, ticket_parts
 from .notifications import DiscordNotifier
@@ -227,6 +228,13 @@ class Watcher:
 
     def _error(self, error: SourceError, target: Target | None = None, *, owner=None) -> Result:
         now = self.clock()
+        diagnostic = safe_http_diagnostic(error.http_diagnostic)
+        if diagnostic:
+            log.warning(
+                "source_http_diagnostic target=%s data=%s",
+                target.id if target else "query",
+                json.dumps(diagnostic, ensure_ascii=True, separators=(",", ":")),
+            )
         with self.store.transaction() as db:
             if owner is not None:
                 try:
@@ -329,7 +337,11 @@ class Watcher:
             status,
             "LIVE",
             {
-                "error": {"code": error.code, "message": str(error)},
+                "error": {
+                    "code": error.code,
+                    "message": str(error),
+                    **({"http_diagnostic": diagnostic} if diagnostic else {}),
+                },
                 "evaluation": {"performed": False, "release_detected": None},
                 "request_count": self.transport.count,
                 "next_allowed_at": timestamp(

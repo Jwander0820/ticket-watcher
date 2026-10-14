@@ -6,6 +6,7 @@ import os
 from collections import deque
 from contextlib import contextmanager
 
+from .http_diagnostics import safe_http_diagnostic
 from .models import timestamp
 
 log = logging.getLogger(__name__)
@@ -107,6 +108,9 @@ class QueryLog:
             "hint": bool(data.get("hint_event_id")),
             "next_at": data.get("next_allowed_at"),
         }
+        diagnostic = safe_http_diagnostic(data.get("error", {}).get("http_diagnostic"))
+        if diagnostic:
+            entry["http_diagnostic"] = diagnostic
         try:
             # Readers/appends share a lock; an I/O failure cannot roll back a
             # rotation whose filesystem changes have already completed.

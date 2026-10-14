@@ -81,7 +81,16 @@ CLI `run` 遇到非預期錯誤會退出，由 Compose 的 `restart: unless-stop
 
 UI 的「查詢紀錄」顯示最近 100 筆檢測，包含時間、目標 ID、手動／自動、成功／不完整／失敗、票況摘要、請求數、耗時及下次排程。單次 `query` 也會留下紀錄；明確手動操作未能執行時記錄原因，自動等待排程不寫紀錄。功能啟用前的歷史不會補造。
 
-每行一筆 JSON，只保存摘要與目標 ID，不保存 Webhook、完整 URL、頻道名稱、HTTP 回應或例外原文。Docker UI 預設目錄為 `/app/data/watcher-logs/`。檔案寫入失敗會在 UI 顯示原因，監控本身繼續運作。
+每行一筆 JSON，只保存摘要與目標 ID，不保存 Webhook、完整 URL、頻道名稱、HTTP 原始回應或例外原文。Docker UI 預設目錄為 `/app/data/watcher-logs/`。檔案寫入失敗會在 UI 顯示原因，監控本身繼續運作。
+
+HTTP 401／403 會附上 `http_diagnostic`，也寫入 Docker 日誌的 `source_http_diagnostic`。可從上述日誌檔、查詢結果 JSON 或控制台的 `/api/state?view=logs` 讀取，無須重新查票。內容包含：
+
+- HTTP 狀態／版本、`get` 或 `getS3`、靜態資源種類、此輪第幾次請求及本次 ID 數量（不保存 ID 值）。
+- `direct`／`configured_proxy` 路由設定及 User-Agent；不記錄代理網址、帳密或另行查詢出口 IP。
+- 白名單化的 Server、Content-Type、Content-Encoding、X-Cache、`CF-Mitigated: challenge`、Retry-After 秒數，以及格式有效的 CloudFront／Cloudflare／AWS 追蹤 ID。
+- 錯誤頁只在記憶體中讀取最多 16 KiB（壓縮前後皆有限制）、最多 1 秒且受整體請求逾時限制；只保存已知特徵，例如 `cloudfront`、`request_blocked`、`cloudflare_challenge`、`access_denied`，不保存原始文字、Cookie、Location 或任意標頭。無已知特徵時保留空清單，不猜測原因。
+
+診斷只讀取已發出的那一次回應，不增加探測或重試。錯誤頁過大、壓縮異常、逾時或讀取失敗，仍維持 `BLOCKED`；診斷期間取消工作也會保存平台暫停。403 的 Retry-After 僅作為證據，不會改成自動恢復。追蹤 ID 可協助平台方比對日誌，但回應特徵本身無法證明是哪條 WAF 規則、IP 封鎖或解封時間。
 
 輪替以第一次建立週期起算，期限與進度寫入 SQLite，重啟不重算；常駐服務即使沒有新查詢也會清理舊週期，停機期間則在下次啟動／讀取時清理。輪替、追加或讀取中斷可接續重試，不會因重複輪替提早刪除上一週紀錄。
 

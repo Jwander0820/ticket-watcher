@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 import math
 from contextvars import ContextVar
 from datetime import UTC, datetime
@@ -9,8 +10,11 @@ import httpx
 
 from .config import Config
 from .http_body import ACCEPT_ENCODING, PUBLIC_BODY_LIMIT, ResponseBodyError, read_body
+from .http_diagnostics import read_blocked_diagnostic, response_diagnostic
 from .models import SourceError, utcnow
 from .storage import Store
+
+log = logging.getLogger(__name__)
 
 
 def retry_after(value: str | None, now: float) -> float:
@@ -63,6 +67,7 @@ class PublicTransport:
                 break
             await asyncio.sleep(min(delay, 30))
         self.count += 1
+        blocked_error = None
         try:
             # HTTPX read timeouts bound each chunk, not the entire response.
             async with asyncio.timeout(self.config.timeout):
@@ -70,9 +75,21 @@ class PublicTransport:
                     "GET", url, params=params, headers={"Accept-Encoding": ACCEPT_ENCODING}
                 ) as response:
                     if response.status_code in (401, 403):
-                        raise SourceError(
-                            "BLOCKED", f"網站拒絕存取（HTTP {response.status_code}），需人工處理"
+                        blocked_error = SourceError(
+                            "BLOCKED",
+                            f"網站拒絕存取（HTTP {response.status_code}），需人工處理",
+                            http_diagnostic=response_diagnostic(
+                                response,
+                                params,
+                                proxy_configured=bool(self.config.ticketplus_proxy),
+                                request_number=self.count,
+                                retry_after=retry_after(
+                                    response.headers.get("Retry-After"), self.clock()
+                                ),
+                            ),
                         )
+                        await read_blocked_diagnostic(response, blocked_error.http_diagnostic)
+                        raise blocked_error
                     if response.status_code == 429:
                         raise SourceError(
                             "RATE_LIMITED",
@@ -86,9 +103,28 @@ class PublicTransport:
                             "PARSE", f"資料來源回傳非預期 HTTP {response.status_code}"
                         )
                     body = await read_body(response, PUBLIC_BODY_LIMIT)
+        except asyncio.CancelledError:
+            if blocked_error is not None:
+                # UI pause/shutdown may cancel the diagnostic read. Preserve a
+                # rejection already seen on the wire, then honor cancellation.
+                with self.store.transaction() as db:
+                    db.execute("UPDATE platform SET paused_reason='BLOCKED' WHERE id='ticketplus'")
+                blocked_error.http_diagnostic["body_read"] = "cancelled"
+                log.warning(
+                    "source_http_diagnostic cancelled=true data=%s",
+                    json.dumps(blocked_error.http_diagnostic, separators=(",", ":")),
+                )
+            raise
         except ResponseBodyError as error:
             raise SourceError("PARSE", str(error)) from None
-        except (httpx.HTTPError, TimeoutError):
+        except (httpx.HTTPError, TimeoutError) as error:
+            if blocked_error is not None:
+                # The outer request deadline or response close may also fail.
+                # A known rejection must never become a retriable NETWORK error.
+                blocked_error.http_diagnostic["body_read"] = (
+                    "timeout" if isinstance(error, TimeoutError) else "network_error"
+                )
+                raise blocked_error from None
             raise SourceError("NETWORK", "網路連線失敗或逾時") from None
         if "text/html" in response.headers.get("content-type", "").lower():
             page = body.decode("utf-8", errors="replace").lower()

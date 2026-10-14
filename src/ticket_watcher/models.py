@@ -61,12 +61,13 @@ class Observation:
 
 
 class SourceError(Exception):
-    """Safe diagnostics only: never include bodies, headers or credential URLs."""
+    """Safe message plus optional allowlisted HTTP evidence; never raw responses."""
 
-    def __init__(self, code: str, message: str, retry_after: float = 0):
+    def __init__(self, code: str, message: str, retry_after: float = 0, *, http_diagnostic=None):
         super().__init__(message)
         self.code = code
         self.retry_after = retry_after
+        self.http_diagnostic = http_diagnostic
 
 
 @dataclass

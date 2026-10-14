@@ -241,25 +241,20 @@ class TicketPlusAdapter:
         if len(visible) > 1000:
             raise SourceError("UNSUPPORTED", "場次項目數超過目前完整查詢上限")
         # Validate against the full static list, then fetch every selected item.
+        # Send the complete selection in one dynamic request. Never split/retry a
+        # rejected or incomplete response; missing items remain UNKNOWN below.
         # Output pagination never limits the inventory that gets evaluated.
         rows = {}
         ids = sorted(wanted or visible)
-        for start in range(0, len(ids), 100):
-            data = await self.transport.get_json(
-                STATUS_API, {ident_field: ",".join(ids[start : start + 100])}
-            )
-            result = data.get("result")
-            batch = result.get(response_field) if isinstance(result, dict) else None
-            if str(data.get("errCode")) != "00" or not isinstance(batch, list) or not batch:
-                raise SourceError("PARSE", "票區或票種 API 未提供有效資料")
-            for row in batch:
-                if (
-                    not isinstance(row, dict)
-                    or not isinstance(row.get("id"), str)
-                    or row["id"] in rows
-                ):
-                    raise SourceError("PARSE", "動態票區或票種 ID 缺失或重複")
-                rows[row["id"]] = row
+        data = await self.transport.get_json(STATUS_API, {ident_field: ",".join(ids)})
+        result = data.get("result")
+        inventory = result.get(response_field) if isinstance(result, dict) else None
+        if str(data.get("errCode")) != "00" or not isinstance(inventory, list) or not inventory:
+            raise SourceError("PARSE", "票區或票種 API 未提供有效資料")
+        for row in inventory:
+            if not isinstance(row, dict) or not isinstance(row.get("id"), str) or row["id"] in rows:
+                raise SourceError("PARSE", "動態票區或票種 ID 缺失或重複")
+            rows[row["id"]] = row
         order_url = f"https://ticketplus.com.tw/order/{event_public_id}/{public_id(session_id)}"
         items = []
         for ident, item in visible.items():

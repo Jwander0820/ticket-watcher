@@ -22,7 +22,7 @@ CASES = json.loads(
 
 
 class CaseTransport:
-    """Recorded public responses, with batch behavior matching the public API."""
+    """Recorded samples with synthetic ID filtering, not proof of live API limits."""
 
     owner = None  # Parser-only fixture; no HTTP request/lease is exercised.
 
@@ -160,31 +160,74 @@ def test_unavailable_inventory_cannot_report_positive_count():
     ) == ("TEMPORARILY_UNAVAILABLE", "暫無票券", 0)
 
 
-@pytest.mark.parametrize("selected", [0, 1, 110])
-def test_more_than_100_areas_are_batched_without_truncation(harness, selected):
-    transport = CaseTransport(harness, YUURI)
+def large_inventory_case(harness, event):
+    transport = CaseTransport(harness, event)
     sid = transport.case["sessions"][0]["sessionId"]
     internal = internal_id(sid, "s")
-    static = next(x for x in transport.case["ticketAreas"] if x["sessionId"] == sid)
-    dynamic = transport.case["live"][internal]["ticketArea"][0]
-    for i in range(110):
-        ident = f"a{900000000 + i:09d}"
-        transport.case["ticketAreas"].append({**static, "ticketAreaId": ident})
-        transport.case["live"][internal]["ticketArea"].append({**dynamic, "id": ident})
-    filters = tuple(f"a{900000000 + i:09d}" for i in range(selected))
-    result = asyncio.run(
-        TicketPlusAdapter(transport).fetch(
-            Target(
-                "test", "test", f"https://ticketplus.com.tw/order/{YUURI}/{sid}", item_ids=filters
-            )
-        )
+    collection, field, prefix = (
+        ("ticketAreas", "ticketArea", "a") if event == YUURI else ("products", "product", "p")
     )
-    assert result.complete and len(result.items) == (selected or 181)
-    if selected:
-        assert {item.item_key for item in result.items} == set(filters)
-    assert [
-        len(x["ticketAreaId"].split(",")) for x in transport.requests if "ticketAreaId" in x
-    ] == {0: [100, 81], 1: [1], 110: [100, 10]}[selected]
+    parameter = f"{field}Id"
+    static = next(x for x in transport.case[collection] if x["sessionId"] == sid)
+    dynamic = transport.case["live"][internal][field][0]
+    transport.case[collection] = [
+        {**static, parameter: f"{prefix}{900000000 + i:09d}"} for i in range(132)
+    ]
+    # Reverse the response and vary inventory to require matching by ID, not index.
+    live = [
+        {
+            **dynamic,
+            "id": f"{prefix}{900000000 + i:09d}",
+            "status": "onsale" if i % 2 else "soldout",
+            f"{field}Limit": True,
+            "count": 1 if i % 2 else 0,
+        }
+        for i in reversed(range(132))
+    ]
+    transport.case["live"][internal][field] = live
+    target = Target("test", "test", f"https://ticketplus.com.tw/order/{event}/{sid}")
+    return transport, target, parameter, internal, live
+
+
+@pytest.mark.parametrize("event", [YUURI, SALE])
+@pytest.mark.parametrize("selected", [0, 1, 110])
+def test_more_than_100_items_use_one_dynamic_request_with_all_ids(harness, event, selected):
+    transport, target, parameter, _, live = large_inventory_case(harness, event)
+    filters = tuple(sorted(row["id"] for row in live)[:selected])
+    target = replace(target, item_ids=filters)
+    adapter = TicketPlusAdapter(transport)
+    result = asyncio.run(adapter.fetch(target))
+    assert result.complete and len(result.items) == (selected or 132)
+    assert result.request_count == 4  # Three static resources plus one inventory request.
+    expected_ids = set(filters) if selected else {row["id"] for row in live}
+    assert {item.item_key for item in result.items} == expected_ids
+    for item in result.items:
+        assert item.status == ("AVAILABLE" if int(item.item_key[1:]) % 2 else "SOLD_OUT")
+    dynamic_requests = [x for x in transport.requests if parameter in x]
+    assert len(dynamic_requests) == 1
+    assert set(dynamic_requests[0][parameter].split(",")) == expected_ids
+    transport.requests.clear()
+    cached = asyncio.run(adapter.fetch(target))
+    assert cached.complete and cached.items == result.items
+    assert cached.request_count == len(transport.requests) == 1
+    assert set(transport.requests[0][parameter].split(",")) == expected_ids
+
+
+@pytest.mark.parametrize("event", [YUURI, SALE])
+def test_truncated_large_response_marks_missing_items_unknown_without_extra_requests(
+    harness, event
+):
+    transport, target, parameter, session_id, live = large_inventory_case(harness, event)
+    missing = {row["id"] for row in live[100:]}
+    del live[100:]
+    result = asyncio.run(TicketPlusAdapter(transport).fetch(target))
+    assert not result.complete and len(result.items) == 132
+    assert result.incomplete_session_ids == {session_id}
+    assert {item.item_key for item in result.items if item.status == "UNKNOWN"} == missing
+    assert result.request_count == 4
+    dynamic_requests = [x for x in transport.requests if parameter in x]
+    assert len(dynamic_requests) == 1
+    assert len(dynamic_requests[0][parameter].split(",")) == 132
 
 
 def test_order_product_release_compares_quantity_and_formats_ticket_name(harness, monkeypatch):
