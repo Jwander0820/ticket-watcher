@@ -86,6 +86,10 @@ class Controller:
         startup_error = None
         try:
             self.watcher = self._prepare_worker()
+            if self.monitor and not self.config.ui_paused:
+                # Expose the new deadlines in the startup/resume response before
+                # the asynchronous polling loop gets its first turn.
+                self.watcher.prepare_monitoring()
         except Exception as error:
             if not self.monitor:
                 raise

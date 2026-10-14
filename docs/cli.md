@@ -17,7 +17,7 @@
 | `tick` | 執行一輪到期目標與通知工作 | 可更新基準及通知，完成後退出 |
 | `run` | 常駐監控 | 持續查票與處理通知，至少需一個啟用目標 |
 | `health` | 唯讀查看本機 heartbeat 與最近查詢資訊 | 不查票、不建立或遷移資料庫 |
-| `resume --target <ID>` / `--platform ticketplus` | 人工解除目標／平台暫停 | 不清除等待期限與原有排程 |
+| `resume --target <ID>` / `--platform ticketplus` | 人工解除目標／平台暫停 | 保留等待期限與未來排程，逾期目標隨機錯開補查 |
 | `ui` | 啟動控制台與監控工作 | 詳見 [控制台指南](ui.md) |
 
 監控操作需 `--config <檔案>` 或目前目錄的 `config.yaml`。`query` 未指定設定且目前目錄沒有 `config.yaml` 時，使用目前目錄的 `data/watcher.db`。它仍會保存共享平台節流、元資料快取及查詢紀錄，並非完全不寫磁碟。

@@ -45,7 +45,7 @@ ticket-watcher --config config.yaml resume --platform ticketplus --json
 ticket-watcher --config config.yaml resume --target my-event --json
 ```
 
-`resume` 不清除伺服器等待期限與原有排程。同程序操作會立即喚醒排程；其他 CLI 程序修改共享 DB 後，常駐程序會在下一次 30 秒 heartbeat 檢查到變更。
+`resume` 不清除伺服器等待期限，尚未到期的排程保持不變。實際解除暫停時，既有且已逾期的目標會隨機排列，從平台等待期限之後每隔 60～90 秒安排一筆補查；重複解除不會再次延後。常駐程序啟動／重啟或 UI 恢復運作也使用相同規則，詳見 [控制台暫停與恢復](ui.md#暫停運作保留-ui)。同程序操作會立即喚醒排程以等待新期限；其他 CLI 程序修改共享 DB 後，常駐程序會在下一次 30 秒 heartbeat 檢查到變更。
 
 ## 通知狀態
 

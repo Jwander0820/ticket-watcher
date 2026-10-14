@@ -24,6 +24,7 @@ from .transport import PublicTransport
 log = logging.getLogger(__name__)
 HEARTBEAT_INTERVAL_SECONDS = 30
 MAINTENANCE_RETRY_SECONDS = 30
+RECOVERY_GAP_SECONDS = (60, 90)
 
 
 def capabilities() -> Result:
@@ -925,22 +926,62 @@ class Watcher:
     def health(self) -> Result:
         return health_snapshot(self.store.connection, self.config.targets, self.clock())
 
+    def _spread_overdue_checks(self, db, *, ident=None):
+        """Persist recovery deadlines without resetting baselines or existing waits."""
+        now = self.clock()
+        platform = self.store.platform()
+        if platform["paused_reason"]:
+            return
+        overdue = []
+        for target in self.config.targets:
+            if not target.enabled or (ident is not None and target.id != ident):
+                continue
+            state = self.store.target(target.id)
+            if (
+                not state
+                or state["signature"] != target.signature
+                or state["paused_reason"]
+                or state["next_check"] > now
+                or stop_info(target, self.store.target_schedule(target), now)["stop_reason"]
+            ):
+                continue
+            overdue.append(target.id)
+        self.rng.shuffle(overdue)
+        # Start after shared cooldowns, otherwise they could collapse all the
+        # staggered deadlines into one burst when access becomes available.
+        due = max(now, platform["blocked_until"], platform["lease_until"], platform["next_request"])
+        for target_id in overdue:
+            due += max(self.config.request_gap, self.rng.randint(*RECOVERY_GAP_SECONDS))
+            db.execute("UPDATE targets SET next_check=? WHERE id=?", (due, target_id))
+
+    def prepare_monitoring(self):
+        # Called only when starting a monitor, never by read-only status/query
+        # construction. Future deadlines survive repeated starts unchanged.
+        with self.store.transaction() as db:
+            self._spread_overdue_checks(db)
+
     def resume(self, ident=None, *, platform=False) -> Result:
         # Explicit manual intervention clears pauses, but never clears server cooldowns.
         with self.store.transaction() as db:
             if platform:
+                was_paused = bool(self.store.platform()["paused_reason"])
                 db.execute("UPDATE platform SET paused_reason=NULL WHERE id='ticketplus'")
             else:
                 self._target(ident)
+                state = self.store.target(ident)
+                was_paused = bool(state and state["paused_reason"])
                 db.execute(
                     "UPDATE targets SET paused_reason=NULL,parse_failures=0 WHERE id=?", (ident,)
                 )
+            if was_paused:
+                self._spread_overdue_checks(db, ident=None if platform else ident)
         self.wake()
         return Result(
             data={"resumed": "ticketplus" if platform else ident, "cooldowns_preserved": True}
         )
 
     async def run(self):
+        self.prepare_monitoring()
         wakeup, stop = asyncio.Event(), asyncio.Event()
         async with self._heartbeat(), asyncio.TaskGroup() as tasks:
             tasks.create_task(self._delivery_loop(wakeup, stop))
