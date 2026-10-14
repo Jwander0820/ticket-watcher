@@ -5,3 +5,84 @@
 .service-controls{display:flex;align-items:center;gap:12px;flex-wrap:wrap;justify-content:flex-end}.service-state.paused{background:#fbf1d7;color:var(--gold)}.pause-banner{border-left:4px solid var(--gold)}.pause-banner p{margin:4px 0 0}.topbar{height:auto;min-height:90px;padding-block:14px}.service-controls button{white-space:nowrap}button:disabled{cursor:not-allowed}@media(max-width:760px){.topbar{align-items:flex-start;flex-direction:column;gap:8px}.service-controls{width:100%;justify-content:space-between;gap:8px}.service-controls button{font-size:13px}}
 
 .channel-picker{margin:20px 0 0;padding:0;border:0}.channel-picker legend{font-size:13px;margin-bottom:7px}.channel-options{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}.channel-option{margin:0;min-height:48px;padding:10px 12px;border:1px solid #aebdce;border-radius:7px;font-size:13px;font-weight:500;overflow-wrap:anywhere}.channel-option input{flex:none}.channel-option:has(input:checked){border-color:var(--teal);background:var(--teal-soft)}.event-row .delivery-result{margin-top:8px}.delivery-result small{display:block}@media(max-width:760px){.channel-options{grid-template-columns:1fr}}
+
+/* Target layouts share the same content and controls. */
+.target-layout{container:monitor / inline-size}
+#targets-view .page-heading{margin:26px 0 20px}
+#targets-view .overview{padding:18px 22px;margin-bottom:18px}
+.target-toolbar{gap:16px;flex-wrap:wrap}
+.target-tools{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+.layout-switch{display:flex;gap:3px;border:1px solid var(--line);background:#eaf0f6;padding:3px;border-radius:10px}
+.layout-switch button{background:transparent;color:var(--muted);font-size:12px;padding:7px 12px;white-space:nowrap;min-height:38px}
+.layout-switch button[aria-pressed=true]{background:var(--white);color:var(--teal);box-shadow:0 1px 4px #19355718}
+.layout-switch button span{margin-right:3px}
+.ticket-scope{font-size:11px;color:var(--muted);margin:3px 0 0;overflow-wrap:anywhere}
+.ticket-heading>div{min-width:0}
+.ticket-link{flex:none;white-space:nowrap}
+.ticket-areas{margin:12px 0 0;border:0;border-top:1px dashed var(--line);border-radius:0;padding:0}
+.ticket-areas>summary{padding:10px 0;min-height:38px;color:var(--teal);font-weight:600}
+.ticket-areas[open]>summary{margin-bottom:4px}
+.ticket-area-content{min-width:0}
+.item-note{font-size:11px;color:var(--muted);margin:0 0 8px}
+.ticket-items{list-style:none;margin:0 0 12px;padding:0;max-height:320px;overflow:auto;overscroll-behavior:contain}
+.ticket-item{display:flex;justify-content:space-between;align-items:start;gap:12px;border-top:1px solid #edf1f6;padding:8px 0;font-size:12px;overflow-wrap:anywhere}
+.ticket-item>span:first-child{flex:1;min-width:0}
+.ticket-item>span:last-child{flex:none;text-align:right;max-width:50%}
+.ticket-item small{display:block;font-size:11px;color:var(--muted)}
+.ticket-area-content>.secondary{font-size:12px;min-height:38px;width:100%}
+.target-list>.empty{grid-column:1/-1}
+.target-list[data-layout=compact]{grid-template-columns:repeat(auto-fill,minmax(min(100%,280px),1fr));align-items:start}
+.target-list[data-layout=compact] .ticket{grid-template-columns:minmax(0,1fr)}
+.target-list[data-layout=compact] .ticket-stub{flex-direction:row;justify-content:space-between;padding:8px 16px;border-right:0;border-bottom:1px dashed #cbd6e3;gap:12px}
+.target-list[data-layout=compact] .ticket-stub strong{font-size:12px}
+.target-list[data-layout=compact] .ticket-main{padding:12px 16px 0}
+.target-list[data-layout=compact] .ticket-heading{gap:8px;flex-wrap:nowrap}
+.target-list[data-layout=compact] .ticket-title{font-size:16px;line-height:1.45}
+.target-list[data-layout=compact] .ticket-link{font-size:11px}
+.target-list[data-layout=compact] .ticket-details{grid-template-columns:repeat(2,minmax(0,1fr));gap:7px 12px;margin:10px 0}
+.target-list[data-layout=compact] .ticket-details dd{font-size:11px;margin-top:1px}
+.target-list[data-layout=compact] .ticket-actions{gap:0;margin-top:12px;padding-top:6px;justify-content:space-between}
+.target-list[data-layout=compact] .ticket-actions button{padding-inline:6px}
+.target-list[data-layout=compact] .ticket-areas{margin-top:6px;padding-bottom:4px}
+.target-list[data-layout=compact] .ticket-areas>summary{min-height:34px;padding:8px 0}
+.target-list[data-layout=list]{gap:8px}
+.target-list[data-layout=list] .ticket{grid-template-columns:82px minmax(0,1fr)}
+.target-list[data-layout=list] .ticket-main{display:grid;grid-template-columns:minmax(150px,1.15fr) minmax(100px,.7fr) minmax(230px,1.3fr) 195px;align-items:center;gap:2px 18px;padding:12px 18px}
+.target-list[data-layout=list] .ticket-heading{grid-column:1;grid-row:1;display:flex;flex-direction:column;align-items:flex-start;gap:2px}
+.target-list[data-layout=list] .ticket-title{font-size:15px}
+.target-list[data-layout=list] .ticket-link{display:inline-flex;align-items:center;min-height:24px;margin-top:0}
+.target-list[data-layout=list] .badge-group{grid-column:2;grid-row:1/3;margin:0}
+.target-list[data-layout=list] .ticket-details{grid-column:3;grid-row:1/3;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px 14px;margin:0}
+.target-list[data-layout=list] .ticket-details dd{font-size:11px;margin-top:0}
+.target-list[data-layout=list] .ticket-actions{grid-column:4;grid-row:1/3;border:0;margin:0;padding:0;gap:0;justify-content:flex-start}
+.target-list[data-layout=list] .ticket-actions button{padding-inline:8px}
+.target-list[data-layout=list] .ticket-areas{grid-column:1;grid-row:2;margin-top:0}
+.target-list[data-layout=list] .ticket-areas[open]{grid-column:1/-1;grid-row:3}
+.target-list[data-layout=list] .ticket-areas:not([open]){border:0;justify-self:start}
+.target-list[data-layout=list] .ticket-areas>summary{padding:2px 0;min-height:28px;font-size:11px}
+@supports(container-type:inline-size){
+  .target-list[data-layout=compact]{grid-template-columns:minmax(0,1fr)}
+  @container monitor (min-width:560px){.target-list[data-layout=compact]{grid-template-columns:repeat(2,minmax(0,1fr))}}
+  @container monitor (min-width:880px){.target-list[data-layout=compact]{grid-template-columns:repeat(3,minmax(0,1fr))}}
+  @container monitor (min-width:1180px){.target-list[data-layout=compact]{grid-template-columns:repeat(4,minmax(0,1fr))}}
+}
+@container monitor (max-width:1050px){
+  .target-list[data-layout=list] .ticket-main{grid-template-columns:minmax(150px,1fr) minmax(180px,1fr);gap:8px 16px}
+  .target-list[data-layout=list] .ticket-heading{grid-column:1;grid-row:1}
+  .target-list[data-layout=list] .badge-group{grid-column:1;grid-row:2}
+  .target-list[data-layout=list] .ticket-details{grid-column:2;grid-row:1/3}
+  .target-list[data-layout=list] .ticket-actions{grid-column:1/-1;grid-row:3}
+  .target-list[data-layout=list] .ticket-areas,.target-list[data-layout=list] .ticket-areas[open]{grid-column:1/-1;grid-row:4}
+}
+@media(max-width:760px){
+  .target-toolbar{align-items:flex-start;gap:10px}
+  .target-tools{width:100%;justify-content:space-between;gap:8px}
+  .layout-switch{max-width:100%;flex:1}
+  .layout-switch button{padding:7px 8px;flex:1;min-height:44px}
+  .target-list[data-layout=compact] .ticket-actions button{min-height:44px}
+  .target-list[data-layout=list] .ticket{grid-template-columns:64px minmax(0,1fr)}
+  .target-list[data-layout=list] .ticket-main{display:flex;flex-direction:column;align-items:stretch;gap:10px;padding:14px}
+  .target-list[data-layout=list] .ticket-heading{align-items:flex-start;gap:2px}
+  .target-list[data-layout=list] .ticket-actions button{min-height:44px}
+  .target-list[data-layout=list] .ticket-areas>summary{min-height:44px;padding:10px 0}
+}

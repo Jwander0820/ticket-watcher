@@ -32,8 +32,8 @@
     <section id="targets-view" class="view" aria-labelledby="targets-heading">
       <div class="page-heading"><div><h1 id="targets-heading">監控場次</h1><p>把想看的演出放在這裡，票況有變化時收到通知。</p></div><button class="primary" data-action="add-target">＋ 新增監控</button></div>
       <div class="overview" id="overview"></div>
-      <div class="section-bar"><h2>我的監控</h2><button class="quiet" data-action="refresh">↻ 更新狀態</button></div>
-      <div id="target-list" class="target-list"><p class="muted">正在讀取監控…</p></div>
+      <div class="section-bar target-toolbar"><h2>我的監控</h2><div class="target-tools"><div class="layout-switch" role="group" aria-label="監控排列形式"><button type="button" data-layout="compact" aria-pressed="true" aria-controls="target-list"><span aria-hidden="true">▦</span> 緊湊卡片</button><button type="button" data-layout="list" aria-pressed="false" aria-controls="target-list"><span aria-hidden="true">☰</span> 條列</button><button type="button" data-layout="detail" aria-pressed="false" aria-controls="target-list"><span aria-hidden="true">▤</span> 詳細卡片</button></div><button class="quiet" data-action="refresh">↻ 更新狀態</button></div></div>
+      <div class="target-layout"><div id="target-list" class="target-list" data-layout="compact"><p class="muted">正在讀取監控…</p></div></div>
       <p class="footnote">初次觀測只建立基準；由無票轉有票時才通知。「暫無票券」會另外標示為釋票線索。</p>
       <p class="footnote">「查詢一次」立即嘗試檢測，不等待例行排程；平台忙碌、封鎖或錯誤退避時仍需等待。</p>
     </section>

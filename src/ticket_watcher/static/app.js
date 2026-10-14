@@ -7,6 +7,22 @@ const eventLabels = {RELEASE:"偵測到可購票", RELEASE_HINT:"發現釋票線
 let state = null, view = "targets", settingsDirty = false, refreshing = false, refreshAgain = false, serviceChanging = false, toastTimer;
 const checking = new Set();
 const renderedViews = new Map();
+const targetLayouts = new Set(["compact", "list", "detail"]);
+const layoutStorageKey = "ticket-watcher.target-layout";
+let targetLayout = "compact";
+try {
+  const saved = localStorage.getItem(layoutStorageKey);
+  if (targetLayouts.has(saved)) targetLayout = saved;
+} catch { /* Layout switching also works when browser storage is unavailable. */ }
+const expandedTargets = new Set();
+const itemPages = new Map();
+function applyTargetLayout() {
+  $("#target-list").dataset.layout = targetLayout;
+  document.querySelectorAll("[data-layout][aria-pressed]").forEach((button) => {
+    button.setAttribute("aria-pressed", String(button.dataset.layout === targetLayout));
+  });
+}
+applyTargetLayout();
 function renderChanged(name, value, draw) {
   const signature = JSON.stringify(value);
   if (renderedViews.get(name) === signature) return;
@@ -47,7 +63,54 @@ function badge(status, label) {
   const tone = ["AVAILABLE","SENT"].includes(status) ? "available" : ["TEMPORARILY_UNAVAILABLE","RELEASE_HINT"].includes(status) ? "hint" : ["ERROR","FAILED"].includes(status) ? "error" : "";
   return `<span class="badge ${tone}">${esc(label || ticketLabels[status] || noticeLabels[status] || status)}</span>`;
 }
+function itemSignature(target) {
+  const s = target.state || {};
+  return JSON.stringify([target.url, target.session_ids, target.item_ids, s.last_checked_at, s.observed_at, s.summary, s.current_observation]);
+}
+function itemMarkup(page) {
+  if (!page) return '<p class="muted" role="status">正在讀取已保存的票況…</p>';
+  const rows = page.items.map((item) => {
+    const status = item.last_valid_status || item.status;
+    const name = [...new Set([item.session_name, item.name].filter(Boolean))].join(" · ") || item.item_key || "未命名項目";
+    return `<li class="ticket-item"><span>${esc(name)}${item.price != null ? `<small>${esc(item.price)} 元</small>` : ""}</span><span>${badge(status)}${item.status === "UNKNOWN" ? badge("ERROR", "本次未知") : ""}</span></li>`;
+  }).join("");
+  return `<p class="item-note">已保存的最後有效票況 · ${page.items.length} / ${page.total} 項</p>${rows ? `<ul class="ticket-items">${rows}</ul>` : `<p class="muted" role="status">${page.loading ? "正在讀取已保存的票況…" : page.error ? "本次未能讀取票區。" : "尚無票區紀錄，完成查詢後才會顯示。"}</p>`}${page.error ? `<p class="form-error" role="alert">${esc(page.error)}</p>` : ""}${page.next_offset != null || page.error ? `<button type="button" class="secondary" data-action="load-items" data-id="${esc(page.id)}" ${page.loading ? "disabled" : ""}>${page.loading ? "讀取中…" : page.error ? "重試讀取" : "載入更多票區"}</button>` : ""}`;
+}
+async function loadTargetItems(id, more = false) {
+  const target = state?.targets.find((t) => t.id === id);
+  if (!target) return;
+  const signature = itemSignature(target), previous = itemPages.get(id);
+  if (previous?.loading && previous.signature === signature) return;
+  if (!more && previous?.signature === signature && !previous.error) { paintTargetItems(id); return; }
+  const current = more && previous?.signature === signature ? previous : {id, signature, items:[], total:0, next_offset:0};
+  const offset = current.next_offset ?? 0;
+  current.loading = true; current.error = null; itemPages.set(id, current); paintTargetItems(id);
+  try {
+    const page = await api(`/api/targets/${encodeURIComponent(id)}/items?offset=${offset}`);
+    if (itemPages.get(id) !== current || itemSignature(state?.targets.find((t) => t.id === id) || {}) !== signature) return;
+    current.items = offset === 0 ? page.items : [...current.items, ...page.items];
+    current.total = page.total; current.next_offset = page.next_offset;
+  } catch (error) { current.error = error.message; }
+  finally { current.loading = false; paintTargetItems(id); }
+}
+function paintTargetItems(id) {
+  const details = Array.from(document.querySelectorAll(".ticket-areas")).find((element) => element.dataset.id === id);
+  if (!details) return;
+  const page = itemPages.get(id);
+  const content = details.querySelector(".ticket-area-content"), focused = content.contains(document.activeElement);
+  const scroll = content.querySelector(".ticket-items")?.scrollTop || 0;
+  content.innerHTML = itemMarkup(page);
+  const items = content.querySelector(".ticket-items"); if (items) items.scrollTop = scroll;
+  content.setAttribute("aria-busy", String(page?.loading || false));
+  if (focused) {
+    const next = content.querySelector("button:not(:disabled)") || details.querySelector("summary");
+    next.focus({preventScroll:true});
+  }
+}
 function renderTargets() {
+  const list = $("#target-list"), active = list.contains(document.activeElement) ? document.activeElement : null;
+  const focused = active ? {id:active.dataset.id || active.closest(".ticket-areas")?.dataset.id, action:active.dataset.action, summary:active.tagName === "SUMMARY"} : null;
+  const scrolls = new Map(Array.from(list.querySelectorAll(".ticket-areas"), (details) => [details.dataset.id, details.querySelector(".ticket-items")?.scrollTop || 0]));
   const enabled = state.targets.filter((t) => t.enabled && !isStopped(t)).length;
   $("#overview").innerHTML = `<div class="metric"><span>啟用監控</span><strong>${enabled}</strong><small>個目標</small></div><div class="metric"><span>全部場次</span><strong>${state.targets.length}</strong><small>個目標</small></div><div class="metric"><span>等待通知</span><strong>${state.health.pending_notifications ?? "—"}</strong><small>筆事件</small></div>`;
   $("#target-list").innerHTML = state.targets.length ? state.targets.map((t) => {
@@ -56,8 +119,17 @@ function renderTargets() {
     const summary = Object.entries(s.summary || {}).map(([status,count]) => badge(status, `${ticketLabels[status] || status} ${count}`)).join("") || badge("UNKNOWN","尚未查詢");
     const unknown = (s.current_observation?.UNKNOWN || 0) > 0;
     const stopText = effectiveStop(t) ? dateText(effectiveStop(t)) : t.auto_stop ? "待取得可靠場次時間" : "未設定";
-    return `<article class="ticket"><div class="ticket-stub ${on && !s.paused_reason ? "on" : ""}"><span>${t.url.includes("/order/") ? "票區／票種" : "活動場次"}</span><strong>${label}</strong></div><div class="ticket-main"><div class="ticket-heading"><h3 class="ticket-title">${esc(t.name)}</h3><a class="ticket-link" href="${esc(t.url)}" target="_blank" rel="noreferrer">購票頁 ↗</a></div><div class="badge-group" aria-label="最後有效票況">${summary}${stopped && s.auto_stop_at === effectiveStop(t) ? badge("ENDED","演出已開始") : ""}${unknown ? badge("ERROR","本次票況不完整") : ""}${s.mode === "ACTIVE" ? badge("AVAILABLE","快速模式") : ""}</div><dl class="ticket-details"><div><dt>上次完整觀測</dt><dd>${dateText(s.observed_at)}</dd></div><div><dt>下次預定查詢</dt><dd>${on ? dateText(s.next_allowed_at) : "—"}</dd></div><div><dt>Discord 通知頻道</dt><dd>${esc(targetChannels(t).map(channelName).join("、"))}</dd></div><div><dt>停止監控時間</dt><dd>${esc(stopText)}${s.stopped_session_count ? ` · ${s.stopped_session_count} 場已開始` : ""}</dd></div></dl><div class="ticket-actions"><button class="quiet" data-action="edit-target" data-id="${t.id}">編輯</button><button class="quiet" data-action="toggle-target" data-id="${t.id}">${t.enabled ? "停用" : "啟用"}</button><button class="quiet" data-action="check" data-id="${t.id}" ${!on ? "disabled" : ""}>查詢一次</button>${s.paused_reason ? `<button class="quiet" data-action="resume" data-id="${t.id}">解除暫停</button>` : ""}<button class="quiet danger" data-action="delete-target" data-id="${t.id}">刪除</button></div></div></article>`;
+    const order = t.url.includes("/order/"), scope = t.item_ids.length ? `指定 ${t.item_ids.length} 個票區／票種` : order ? "全部票區／票種" : t.session_ids.length ? `指定 ${t.session_ids.length} 個場次` : "全部活動場次";
+    return `<article class="ticket"><div class="ticket-stub ${on && !s.paused_reason ? "on" : ""}"><span>${order ? "票區／票種" : "活動場次"}</span><strong>${label}</strong></div><div class="ticket-main"><div class="ticket-heading"><div><h3 class="ticket-title">${esc(t.name)}</h3><p class="ticket-scope">${esc(scope)}</p></div><a class="ticket-link" href="${esc(t.url)}" target="_blank" rel="noreferrer">購票頁 ↗</a></div><div class="badge-group" aria-label="最後有效票況">${summary}${stopped && s.auto_stop_at === effectiveStop(t) ? badge("ENDED","演出已開始") : ""}${unknown ? badge("ERROR","本次票況不完整") : ""}${s.mode === "ACTIVE" ? badge("AVAILABLE","快速模式") : ""}</div><dl class="ticket-details"><div><dt>上次完整觀測</dt><dd>${dateText(s.observed_at)}</dd></div><div><dt>下次預定查詢</dt><dd>${on ? dateText(s.next_allowed_at) : "—"}</dd></div><div><dt>Discord 通知頻道</dt><dd>${esc(targetChannels(t).map(channelName).join("、"))}</dd></div><div><dt>停止監控時間</dt><dd>${esc(stopText)}${s.stopped_session_count ? ` · ${s.stopped_session_count} 場已開始` : ""}</dd></div></dl><div class="ticket-actions"><button class="quiet" data-action="edit-target" data-id="${esc(t.id)}">編輯</button><button class="quiet" data-action="toggle-target" data-id="${esc(t.id)}">${t.enabled ? "停用" : "啟用"}</button><button class="quiet" data-action="check" data-id="${esc(t.id)}" ${!on ? "disabled" : ""}>查詢一次</button>${s.paused_reason ? `<button class="quiet" data-action="resume" data-id="${esc(t.id)}">解除暫停</button>` : ""}<button class="quiet danger" data-action="delete-target" data-id="${esc(t.id)}">刪除</button></div><details class="ticket-areas" data-id="${esc(t.id)}" ${expandedTargets.has(t.id) ? "open" : ""}><summary>${order ? "票區／票種明細" : "活動場次明細"}</summary><div class="ticket-area-content">${itemMarkup(itemPages.get(t.id))}</div></details></div></article>`;
   }).join("") : `<div class="empty"><div class="empty-ticket" aria-hidden="true"></div><h2>留意下一張好票</h2><p>新增 TicketPlus 活動或場次網址。先設定監控與通知頻道，再開始追蹤票況。</p><button class="primary" data-action="add-target">＋ 新增第一個監控</button></div>`;
+  const ids = new Set(state.targets.map((t) => t.id));
+  for (const id of itemPages.keys()) if (!ids.has(id)) { itemPages.delete(id); expandedTargets.delete(id); }
+  for (const id of expandedTargets) if (ids.has(id)) void loadTargetItems(id);
+  list.querySelectorAll(".ticket-areas").forEach((details) => {
+    const items = details.querySelector(".ticket-items"); if (items) items.scrollTop = scrolls.get(details.dataset.id) || 0;
+    if (focused?.summary && focused.id === details.dataset.id) details.querySelector("summary").focus({preventScroll:true});
+  });
+  if (focused?.action) Array.from(list.querySelectorAll("button[data-action]")).find((button) => button.dataset.id === focused.id && button.dataset.action === focused.action)?.focus({preventScroll:true});
 }
 function renderChannels() {
   $("#channel-list").innerHTML = state.channels.map((c) => {
@@ -106,7 +178,8 @@ function render() {
   $("#platform-warning").hidden = !state.health.platform_paused;
   $("#platform-warning").innerHTML = state.health.platform_paused ? `TicketPlus 平台已暫停查詢。確認存取問題處理完成後，再解除暫停。<button class="secondary" data-action="resume-platform">解除平台暫停</button>` : "";
   if (view === "targets") {
-    renderChanged(view, [state.targets, state.channels, state.health.pending_notifications, state.targets.map(isStopped), state.ui_paused], renderTargets);
+    const targets = state.targets.map((target) => { const {age_seconds, ...stable} = target.state; return {...target, state:stable}; });
+    renderChanged(view, [targets, state.channels, state.health.pending_notifications, state.targets.map(isStopped), state.ui_paused], renderTargets);
     document.querySelectorAll('[data-action="check"]').forEach((button) => {
       const target = state.targets.find((item) => item.id === button.dataset.id), busy = checking.has(button.dataset.id);
       button.disabled = busy || state.ui_paused || !target.enabled || isStopped(target);
@@ -220,6 +293,12 @@ document.addEventListener("click", async (event) => {
   const button = event.target.closest("button"); if (!button) return;
   if (button.dataset.close) return $(`#${button.dataset.close}`).close();
   if (button.dataset.view) return navigate(button.dataset.view);
+  if (targetLayouts.has(button.dataset.layout)) {
+    targetLayout = button.dataset.layout; applyTargetLayout();
+    try { localStorage.setItem(layoutStorageKey, targetLayout); } catch { /* The selection still applies for this page. */ }
+    return;
+  }
+  if (button.dataset.action === "load-items") { await loadTargetItems(button.dataset.id, true); return; }
   if (!button.dataset.action || !state) return;
   const checkingId = button.dataset.action === "check" ? button.dataset.id : null;
   if (checkingId) { if (checking.has(checkingId)) return; checking.add(checkingId); button.textContent = "查詢中…"; }
@@ -230,6 +309,12 @@ document.addEventListener("click", async (event) => {
     render();
   }
 });
+document.addEventListener("toggle", (event) => {
+  const details = event.target;
+  if (!details.matches?.(".ticket-areas") || !details.isConnected) return;
+  if (details.open) { expandedTargets.add(details.dataset.id); void loadTargetItems(details.dataset.id); }
+  else expandedTargets.delete(details.dataset.id);
+}, true);
 $("#reveal-webhook").addEventListener("click", () => {
   const input = $("#webhook-url"), showing = input.type === "password";
   input.type = showing ? "text" : "password"; $("#reveal-webhook").textContent = showing ? "隱藏" : "顯示"; $("#reveal-webhook").setAttribute("aria-pressed",String(showing));

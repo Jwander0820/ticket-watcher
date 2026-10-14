@@ -478,6 +478,24 @@ async def state(request):
         return web.json_response(request.app[CONTROLLER].state(view))
 
 
+async def target_items(request):
+    offset_text = request.query.get("offset", "0")
+    if not re.fullmatch(r"[0-9]{1,19}", offset_text):
+        raise ValueError
+    offset = int(offset_text)
+    if offset > 2**63 - 1:
+        raise ValueError
+    c = request.app[CONTROLLER]
+    async with c.lock:
+        ident = request.match_info["ident"]
+        if not any(target.id == ident for target in c.config.targets):
+            raise web.HTTPNotFound()
+        if c.watcher is None:
+            raise Conflict("監控正在重新啟動，請稍後再試。")
+        target = c.watcher.status(ident, detail=True, limit=50, offset=offset).data["targets"][0]
+        return web.json_response(target.get("page", {"items": [], "total": 0, "next_offset": None}))
+
+
 async def mutate(request):
     c = request.app[CONTROLLER]
     body = await request.json()
@@ -688,6 +706,7 @@ def create_app(path: Path, *, watcher_factory=Watcher, monitor=True, public_orig
     app.router.add_get("/{file:favicon\\.ico}", asset)
     app.router.add_get("/static/{file}", asset)
     app.router.add_get("/api/state", state)
+    app.router.add_get("/api/targets/{ident}/items", target_items)
     app.router.add_post("/api/actions/{action}", action)
     app.router.add_post("/api/{kind:targets|channels|settings}", mutate)
     app.router.add_put("/api/{kind:targets|channels}/{ident}", mutate)
