@@ -17,6 +17,7 @@ from .models import Observation, Result, SourceError, TicketStatus, timestamp, u
 from .notification_text import SIGNAL_STATUSES, ticket_parts
 from .notifications import DiscordNotifier
 from .platforms.ticketplus import TicketPlusAdapter
+from .polling_policy import evaluate_policy
 from .query_log import QueryLog
 from .schedule import normal_next_check, stop_info, stopped_sessions
 from .storage import LeaseLost, PlatformRestricted, Store
@@ -557,27 +558,62 @@ class Watcher:
                 )
                 for item in observation.items
             )
-            active_until, no_available = old["active_until"], old["no_available"]
-            if releases or hints or temporarily_unavailable:
-                active_until, no_available = now + self.config.active_window, 0
-            elif complete:
-                no_available = (
-                    0
-                    if any(
-                        x.status == TicketStatus.AVAILABLE and x.session_id not in stopped
-                        for x in observation.items
-                    )
-                    else no_available + 1
-                )
-            mode = (
-                "ACTIVE"
-                if active_until
-                and active_until > now
-                and no_available < self.config.exit_active_checks
-                else "NORMAL"
+            policy = self.store.polling_state(target.id)
+            if policy.get("source") != observation.source:
+                policy = {}
+            policy, mode, active_until, no_available, reason = evaluate_policy(
+                self.config,
+                old,
+                policy,
+                [item for item in observation.items if item.session_id not in stopped],
+                now=now,
+                complete=complete,
+                trigger=bool(releases or hints),
+                signal=temporarily_unavailable,
             )
-            if mode == "NORMAL":
-                active_until = None
+            db.execute(
+                "INSERT OR REPLACE INTO runtime VALUES(?,?)",
+                (
+                    f"polling:{target.id}",
+                    json.dumps({**policy, "source": observation.source}),
+                ),
+            )
+            if mode != old["mode"]:
+                labels = {
+                    "SUSTAINED_AVAILABILITY": "持續觀測到有票（數量變動仍計入）",
+                    "UNCHANGED": "票況長時間沒有變化",
+                    "ACTIVE_LIMIT": "快速模式已達持續時間上限",
+                    "NO_STOCK": "連續完整確認無票",
+                }
+                message = (
+                    "偵測到新票況訊號，進入快速模式。"
+                    if mode == "ACTIVE"
+                    else f"{labels[reason]}，已回一般模式。"
+                )
+                if mode == "NORMAL" and reason != "NO_STOCK":
+                    message += (
+                        f"冷卻 {self.config.active_cooldown // 60} 分鐘，期間仍查票並通知釋票。"
+                    )
+                log.info("polling_mode target=%s mode=%s reason=%s", target.id, mode, reason)
+                if self.config.system_alerts:
+                    self.store.enqueue(
+                        db,
+                        str(uuid.uuid4()),
+                        target.id,
+                        "SYSTEM",
+                        now,
+                        {
+                            "polling_alert": True,
+                            "title": "🔎 監控模式變更",
+                            "event_name": observation.event_name,
+                            "message": message,
+                            "mode": mode,
+                            "reason": reason,
+                        },
+                        self.config.notification_ttl,
+                        True,
+                        channel_ids=("default",),
+                    )
             parses = 0 if complete else old["parse_failures"] + 1
             pause = "PARSE" if parses >= 3 else None
             next_check = (
@@ -827,6 +863,7 @@ class Watcher:
                 "target_id": key,
                 "event_name": state["event_name"],
                 "mode": state["mode"],
+                "polling_policy": self.store.polling_summary(key),
                 "next_allowed_at": timestamp(state["next_check"]),
                 "active_until": timestamp(state["active_until"]),
                 "last_checked_at": timestamp(state["last_checked"]),

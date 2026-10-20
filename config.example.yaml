@@ -9,6 +9,9 @@ polling:
   active_interval_seconds: [60, 180]
   active_window_seconds: 1800
   exit_active_after_no_available_checks: 2
+  active_stable_checks: 5  # 持續有票或相同票況的有效觀測次數
+  active_stable_seconds: 600  # 同時至少維持 10 分鐘才降速
+  active_cooldown_seconds: 1800  # 降速後 30 分鐘內不重新進入快速模式
   quiet_windows: []  # 低頻時段，例如 {start: "00:00", end: "07:00", interval_seconds: [10800, 12600]}
 
 http:

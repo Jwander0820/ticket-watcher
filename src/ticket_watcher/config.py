@@ -126,6 +126,9 @@ class Config:
     active_interval: tuple[int, int] = (60, 180)
     active_window: int = 1800
     exit_active_checks: int = 2
+    active_stable_checks: int = 5
+    active_stable_seconds: int = 600
+    active_cooldown: int = 1800
     request_gap: tuple[int, int] = (5, 15)  # random pause after each request
     timeout: int = 20
     backoff: tuple[int, ...] = (900, 1800, 3600)
@@ -281,6 +284,9 @@ def parse_config(data: dict, directory: Path) -> Config:
             "active_interval_seconds",
             "active_window_seconds",
             "exit_active_after_no_available_checks",
+            "active_stable_checks",
+            "active_stable_seconds",
+            "active_cooldown_seconds",
             "quiet_windows",
         },
     )
@@ -410,6 +416,9 @@ def parse_config(data: dict, directory: Path) -> Config:
         active_interval=_interval(polling.get("active_interval_seconds", [60, 180]), 60),
         active_window=_int(polling.get("active_window_seconds", 1800)),
         exit_active_checks=_int(polling.get("exit_active_after_no_available_checks", 2)),
+        active_stable_checks=_int(polling.get("active_stable_checks", 5)),
+        active_stable_seconds=_int(polling.get("active_stable_seconds", 600)),
+        active_cooldown=_int(polling.get("active_cooldown_seconds", 1800)),
         quiet_windows=_quiet_windows(polling.get("quiet_windows", [])),
         request_gap=_request_gap(http.get("min_request_gap_seconds", [5, 15])),
         timeout=_int(http.get("timeout_seconds", 20)),

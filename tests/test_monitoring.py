@@ -166,7 +166,7 @@ def test_unavailable_enters_fast_mode_without_requiring_soldout_baseline(harness
         assert not w.events().data["events"]
 
 
-def test_repeated_unavailable_renews_fast_mode_and_real_empty_checks_exit(harness):
+def test_repeated_unavailable_cannot_extend_fast_mode_past_limit(harness):
     h, w = harness, harness["watcher"]
     check(h, "TEMPORARILY_UNAVAILABLE")
     expiry = w.store.target("test")["active_until"]
@@ -181,11 +181,12 @@ def test_repeated_unavailable_renews_fast_mode_and_real_empty_checks_exit(harnes
     h["clock"].now = expiry + 1
     check(h, "TEMPORARILY_UNAVAILABLE")
     state = w.store.target("test")
-    assert state["mode"] == "ACTIVE"
-    assert state["active_until"] == h["clock"]() + h["config"].active_window
-    assert state["next_check"] == h["clock"]() + 60
+    assert state["mode"] == "NORMAL"
+    assert state["active_until"] is None
+    assert state["next_check"] == h["clock"]() + 300
+    assert w.store.polling_state("test")["reason"] == "ACTIVE_LIMIT"
     check(h, "SOLD_OUT")
-    assert w.store.target("test")["mode"] == "ACTIVE"
+    assert w.store.target("test")["mode"] == "NORMAL"
     check(h, "SOLD_OUT")
     state = w.store.target("test")
     assert state["mode"] == "NORMAL" and state["active_until"] is None

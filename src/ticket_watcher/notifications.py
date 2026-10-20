@@ -95,7 +95,10 @@ class DiscordNotifier:
                 or not state
                 or target.signature != state["signature"]
                 or payload.get("target_signature", state["signature"]) != state["signature"]
-                or notice["channel_id"] not in target.notification_channels
+                or notice["channel_id"]
+                not in (
+                    ("default",) if payload.get("polling_alert") else target.notification_channels
+                )
                 or stop_info(target, self.store.target_schedule(target), self.clock())[
                     "stop_reason"
                 ]

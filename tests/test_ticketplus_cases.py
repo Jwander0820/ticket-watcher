@@ -305,6 +305,7 @@ def test_first_unavailable_from_real_parser_enables_fast_mode(harness, granulari
     target = Target("test", "test", url)
     w.config = replace(h["config"], targets=(target,))
     w.adapter = TicketPlusAdapter(transport)
+    active_start = h["clock"]()
     for _ in range(3):
         result = asyncio.run(w.check("test", immediate=True))
         assert result.data["granularity"] == granularity and result.data["complete"]
@@ -313,7 +314,7 @@ def test_first_unavailable_from_real_parser_enables_fast_mode(harness, granulari
         assert set(result.data["summary"]) == {"TEMPORARILY_UNAVAILABLE"}
         state = w.store.target("test")
         assert state["mode"] == "ACTIVE" and state["no_available"] == 0
-        assert state["active_until"] == h["clock"]() + h["config"].active_window
+        assert state["active_until"] == active_start + h["config"].active_window
         assert state["next_check"] == h["clock"]() + 60
         h["clock"].now = state["next_check"]
     assert not w.events().data["events"] and not h["requests"]

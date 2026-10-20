@@ -132,7 +132,10 @@ class Store:
     def sync_target(self, target: Target):
         with self.transaction() as db:
             old = db.execute("SELECT * FROM targets WHERE id=?", (target.id,)).fetchone()
+            if not old:
+                db.execute("DELETE FROM runtime WHERE key=?", (f"polling:{target.id}",))
             if old and old["signature"] != target.signature:
+                db.execute("DELETE FROM runtime WHERE key=?", (f"polling:{target.id}",))
                 db.execute("DELETE FROM items WHERE target_id=?", (target.id,))
                 db.execute(
                     """UPDATE outbox SET status='CANCELLED' WHERE event_id IN
@@ -153,6 +156,24 @@ class Store:
                 "SELECT * FROM items WHERE target_id=? ORDER BY item_key", (ident,)
             )
         ]
+
+    def polling_state(self, ident: str) -> dict:
+        row = self.connection.execute(
+            "SELECT value FROM runtime WHERE key=?", (f"polling:{ident}",)
+        ).fetchone()
+        return json.loads(row[0]) if row else {}
+
+    def polling_summary(self, ident: str) -> dict:
+        # Status stays lightweight: do not deserialize the per-item fingerprint.
+        row = self.connection.execute(
+            """SELECT json_extract(value,'$.reason') AS reason,
+             json_extract(value,'$.cooldown_until') AS cooldown_until,
+             json_extract(value,'$.stable_checks') AS stable_checks,
+             json_extract(value,'$.supply_checks') AS supply_checks
+             FROM runtime WHERE key=?""",
+            (f"polling:{ident}",),
+        ).fetchone()
+        return dict(row) if row else {}
 
     def target_schedule(self, target: Target) -> dict | None:
         row = self.connection.execute(
@@ -386,7 +407,12 @@ class Store:
                         obsolete
                         or not target
                         or (
-                            channel not in target.notification_channels
+                            channel
+                            not in (
+                                ("default",)
+                                if payload.get("polling_alert")
+                                else target.notification_channels
+                            )
                             or payload.get("target_signature", target.signature) != target.signature
                         )
                     )
