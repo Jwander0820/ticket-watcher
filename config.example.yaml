@@ -13,7 +13,7 @@ polling:
 
 http:
   platform_concurrency: 1
-  min_request_gap_seconds: 5
+  min_request_gap_seconds: [5, 15]  # 每個請求完成後隨機等待；舊的單一數字仍可用
   timeout_seconds: 20
   backoff_seconds: [900, 1800, 3600]
 

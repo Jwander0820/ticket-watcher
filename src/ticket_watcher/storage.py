@@ -237,6 +237,13 @@ class Store:
             )
         return 0
 
+    def finish_request(self, next_request: float):
+        # The gap starts when a request finishes, never earlier than reserved.
+        self.connection.execute(
+            "UPDATE platform SET next_request=max(next_request,?) WHERE id='ticketplus'",
+            (next_request,),
+        )
+
     def metadata(self, key: str, now: float) -> dict | None:
         row = self.connection.execute(
             "SELECT payload FROM metadata WHERE key=? AND expires_at>?", (key, now)

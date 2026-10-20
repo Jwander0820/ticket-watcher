@@ -64,7 +64,7 @@ def test_public_url_validation_rejects_unsafe_or_nonactivity_routes(url):
 
 def test_example_config_is_valid_and_disabled_by_default():
     config = load_config("config.example.yaml")
-    assert config.request_gap == 5
+    assert config.request_gap == (5, 15)
     assert config.normal_interval == (300, 900)
     assert config.targets[0].enabled is False
 
@@ -139,7 +139,7 @@ def test_transport_classifies_http_errors_without_retries(harness, status, body,
 
     client = httpx.AsyncClient(transport=httpx.MockTransport(handle))
     transport = PublicTransport(
-        client, h["watcher"].store, replace(h["config"], request_gap=5), h["clock"]
+        client, h["watcher"].store, replace(h["config"], request_gap=(5, 5)), h["clock"]
     )
     transport.owner = "test-owner"
     h["watcher"].store.acquire(transport.owner, h["clock"](), 180)

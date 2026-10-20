@@ -115,7 +115,7 @@ class Watcher:
             headers={"User-Agent": f"TicketWatcher/{__version__}"},
             mounts=mounts,
         )
-        self.transport = PublicTransport(self.client, self.store, config, clock)
+        self.transport = PublicTransport(self.client, self.store, config, clock, self.rng)
         self.adapter = adapter or TicketPlusAdapter(self.transport)
         self.notifier = DiscordNotifier(
             self.client, self.store, config, clock, on_change=self._wake_delivery
@@ -862,20 +862,26 @@ class Watcher:
         enabled_ids = {
             t.id for t in self.config.targets if t.enabled and not self._stop_info(t)["stop_reason"]
         }
-        for target in self.config.targets:
-            if target.id not in enabled_ids:
-                continue
-            state = self.store.target(target.id)
-            if (
-                state
-                and state["signature"] == target.signature
-                and (state["paused_reason"] or state["next_check"] > self.clock())
-            ):
-                continue
-            results.append(await self._check(target.id))
+        checked = set()
+        while True:
+            # Re-pick after every check: one exit, fast mode first, then the
+            # most overdue. Each target runs at most once per round.
+            due = []
+            for target in self.config.targets:
+                if target.id not in enabled_ids or target.id in checked:
+                    continue
+                state = self.store.target(target.id)
+                if not state or state["signature"] != target.signature:
+                    due.append((1, 0, target.id))
+                elif not state["paused_reason"] and state["next_check"] <= self.clock():
+                    due.append((state["mode"] != "ACTIVE", state["next_check"], target.id))
+            if not due:
+                return results
+            ident = min(due)[2]
+            checked.add(ident)
+            results.append(await self._check(ident))
             wakeup.set()
             await asyncio.sleep(0)
-        return results
 
     async def _delivery_loop(self, wakeup: asyncio.Event, stop: asyncio.Event) -> dict:
         sent = 0
@@ -958,13 +964,14 @@ class Watcher:
                 or stop_info(target, self.store.target_schedule(target), now)["stop_reason"]
             ):
                 continue
-            overdue.append(target.id)
+            overdue.append((state["mode"] != "ACTIVE", target.id))
         self.rng.shuffle(overdue)
+        overdue = [target_id for _, target_id in sorted(overdue, key=lambda x: x[0])]
         # Start after shared cooldowns, otherwise they could collapse all the
         # staggered deadlines into one burst when access becomes available.
         due = max(now, platform["blocked_until"], platform["lease_until"], platform["next_request"])
         for target_id in overdue:
-            due += max(self.config.request_gap, self.rng.randint(*RECOVERY_GAP_SECONDS))
+            due += max(self.config.request_gap[1], self.rng.randint(*RECOVERY_GAP_SECONDS))
             db.execute("UPDATE targets SET next_check=? WHERE id=?", (due, target_id))
 
     def prepare_monitoring(self):

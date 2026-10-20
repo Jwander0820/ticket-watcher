@@ -126,7 +126,7 @@ class Config:
     active_interval: tuple[int, int] = (60, 180)
     active_window: int = 1800
     exit_active_checks: int = 2
-    request_gap: int = 5
+    request_gap: tuple[int, int] = (5, 15)  # random pause after each request
     timeout: int = 20
     backoff: tuple[int, ...] = (900, 1800, 3600)
     webhook_url_env: str = "DISCORD_WEBHOOK_URL"
@@ -222,6 +222,13 @@ def _quiet_windows(value) -> tuple[QuietWindow, ...]:
         covered |= minutes
         windows.append(window)
     return tuple(windows)
+
+
+def _request_gap(value) -> tuple[int, int]:
+    # A single number is the older fixed-gap format.
+    if isinstance(value, int) and not isinstance(value, bool):
+        return (_int(value, 5),) * 2
+    return _interval(value, 5)
 
 
 def _sequence(value) -> tuple[int, ...]:
@@ -397,7 +404,7 @@ def parse_config(data: dict, directory: Path) -> Config:
         active_window=_int(polling.get("active_window_seconds", 1800)),
         exit_active_checks=_int(polling.get("exit_active_after_no_available_checks", 2)),
         quiet_windows=_quiet_windows(polling.get("quiet_windows", [])),
-        request_gap=_int(http.get("min_request_gap_seconds", 5), 5),
+        request_gap=_request_gap(http.get("min_request_gap_seconds", [5, 15])),
         timeout=_int(http.get("timeout_seconds", 20)),
         backoff=_sequence(http.get("backoff_seconds", [900, 1800, 3600])),
         webhook_url_env=env_name,

@@ -39,7 +39,7 @@ def test_late_platform_restriction_stops_current_query_before_next_http(
         class TwoRequestSource:
             async def fetch(self, target):
                 await w.transport.get_json("https://example.invalid/first", {})
-                h["clock"].advance(w.config.request_gap)
+                h["clock"].advance(w.config.request_gap[1])
                 await w.transport.get_json("https://example.invalid/second", {})
                 h["source"].push("AVAILABLE")
                 return await h["source"].fetch(target)

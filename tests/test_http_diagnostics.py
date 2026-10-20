@@ -101,7 +101,7 @@ def test_blocked_single_inventory_request_reports_its_size_and_keeps_all_areas(t
     session_hash = public_id("s000000001")
     url = f"https://ticketplus.com.tw/order/{event_hash}/{session_hash}"
     target = Target("test", "test", url)
-    config = Config(database_path=tmp_path / "state.db", targets=(target,), request_gap=0)
+    config = Config(database_path=tmp_path / "state.db", targets=(target,), request_gap=(0, 0))
     requests = []
 
     def handle(request):

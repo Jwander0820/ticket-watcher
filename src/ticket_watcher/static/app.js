@@ -179,7 +179,7 @@ function readLowWindows() {
 function fillSettings() {
   if (settingsDirty) return;
   const s = state.settings, form = $("#settings-form");
-  const values = {normal_min:s.polling.normal_interval_seconds[0], normal_max:s.polling.normal_interval_seconds[1], active_min:s.polling.active_interval_seconds[0], active_max:s.polling.active_interval_seconds[1], active_window:s.polling.active_window_seconds, exit_checks:s.polling.exit_active_after_no_available_checks, request_gap:s.http.min_request_gap_seconds, timeout:s.http.timeout_seconds, notification_ttl:s.notifications.delivery_ttl_seconds};
+  const values = {normal_min:s.polling.normal_interval_seconds[0], normal_max:s.polling.normal_interval_seconds[1], active_min:s.polling.active_interval_seconds[0], active_max:s.polling.active_interval_seconds[1], active_window:s.polling.active_window_seconds, exit_checks:s.polling.exit_active_after_no_available_checks, request_gap_min:s.http.min_request_gap_seconds[0], request_gap_max:s.http.min_request_gap_seconds[1], timeout:s.http.timeout_seconds, notification_ttl:s.notifications.delivery_ttl_seconds};
   Object.entries(values).forEach(([name,value]) => { form.elements[name].value = value; });
   $("#low-windows").innerHTML = (s.polling.quiet_windows || []).map(lowWindowRow).join("");
   form.elements.system_alerts.checked = s.notifications.system_alerts_enabled;
@@ -375,8 +375,8 @@ document.querySelectorAll("form").forEach((form) => form.addEventListener("submi
       value = {name:f.name.value.trim(),webhook_url:f.webhook_url.value.trim()}; path = "/api/channels"; message = "已儲存頻道";
     } else {
       const n = (name) => Number(f[name].value);
-      if (n("normal_max") < n("normal_min") || n("active_max") < n("active_min")) throw new Error("間隔上限不可小於下限。");
-      value = {polling:{normal_interval_seconds:[n("normal_min"),n("normal_max")],active_interval_seconds:[n("active_min"),n("active_max")],active_window_seconds:n("active_window"),exit_active_after_no_available_checks:n("exit_checks"),quiet_windows:readLowWindows()},http:{min_request_gap_seconds:n("request_gap"),timeout_seconds:n("timeout")},notifications:{delivery_ttl_seconds:n("notification_ttl"),system_alerts_enabled:f.system_alerts.checked,worker_alerts_enabled:f.worker_alerts.checked,worker_alert_channel_ids:selectedChannels(form,"worker_channels",$("#worker-channels"))}};
+      if (n("normal_max") < n("normal_min") || n("active_max") < n("active_min") || n("request_gap_max") < n("request_gap_min")) throw new Error("間隔上限不可小於下限。");
+      value = {polling:{normal_interval_seconds:[n("normal_min"),n("normal_max")],active_interval_seconds:[n("active_min"),n("active_max")],active_window_seconds:n("active_window"),exit_active_after_no_available_checks:n("exit_checks"),quiet_windows:readLowWindows()},http:{min_request_gap_seconds:[n("request_gap_min"),n("request_gap_max")],timeout_seconds:n("timeout")},notifications:{delivery_ttl_seconds:n("notification_ttl"),system_alerts_enabled:f.system_alerts.checked,worker_alerts_enabled:f.worker_alerts.checked,worker_alert_channel_ids:selectedChannels(form,"worker_channels",$("#worker-channels"))}};
       path = "/api/settings"; message = "已儲存並套用設定";
     }
     if (form.dataset.id) path += `/${form.dataset.id}`;

@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import math
+import random
 from contextvars import ContextVar
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
@@ -34,13 +35,16 @@ def retry_after(value: str | None, now: float) -> float:
 
 
 class PublicTransport:
-    def __init__(self, client: httpx.AsyncClient, store: Store, config: Config, clock=utcnow):
+    def __init__(
+        self, client: httpx.AsyncClient, store: Store, config: Config, clock=utcnow, rng=None
+    ):
         self.client, self.store, self.config, self.clock = client, store, config, clock
+        self.rng = rng or random.SystemRandom()
         # A late request and its replacement can share this transport in the UI.
         # Keep their identities/counters local to each task, not to the client.
         self._owner = ContextVar("query_owner", default="")
         self._count = ContextVar("query_count", default=0)
-        self.lease_seconds = max(180, config.timeout * 4 + config.request_gap * 4 + 60)
+        self.lease_seconds = max(180, config.timeout * 4 + config.request_gap[1] * 4 + 60)
 
     @property
     def owner(self):
@@ -61,12 +65,18 @@ class PublicTransport:
     async def get_json(self, url: str, params: dict) -> dict:
         while True:
             delay = self.store.reserve_request(
-                self.owner, self.clock(), self.config.request_gap, self.lease_seconds
+                self.owner, self.clock(), self.config.request_gap[0], self.lease_seconds
             )
             if not delay:
                 break
             await asyncio.sleep(min(delay, 30))
         self.count += 1
+        try:
+            return await self._request(url, params)
+        finally:
+            self.store.finish_request(self.clock() + self.rng.randint(*self.config.request_gap))
+
+    async def _request(self, url: str, params: dict) -> dict:
         blocked_error = None
         try:
             # HTTPX read timeouts bound each chunk, not the entire response.

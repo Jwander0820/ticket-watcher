@@ -329,7 +329,10 @@ class Controller:
                 "exit_active_after_no_available_checks": c.exit_active_checks,
                 "quiet_windows": [quiet_window(w) for w in c.quiet_windows],
             },
-            "http": {"min_request_gap_seconds": c.request_gap, "timeout_seconds": c.timeout},
+            "http": {
+                "min_request_gap_seconds": list(c.request_gap),
+                "timeout_seconds": c.timeout,
+            },
             "notifications": {
                 "system_alerts_enabled": c.system_alerts,
                 "worker_alerts_enabled": c.worker_alerts,
