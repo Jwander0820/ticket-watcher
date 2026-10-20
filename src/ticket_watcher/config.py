@@ -101,6 +101,19 @@ class Channel:
 
 
 @dataclass(frozen=True)
+class QuietWindow:
+    # Minutes since local midnight; start > end wraps past midnight.
+    start: int
+    end: int
+    interval: tuple[int, int] | None = None  # None pauses normal checks
+
+    def minutes(self) -> set[int]:
+        if self.start < self.end:
+            return set(range(self.start, self.end))
+        return set(range(self.start, 1440)) | set(range(self.end))
+
+
+@dataclass(frozen=True)
 class Config:
     database_path: Path = Path("data/watcher.db")
     timezone: str = "Asia/Taipei"
@@ -123,6 +136,7 @@ class Config:
     ui_paused: bool = False
     ticketplus_proxy: str = field(default_factory=_ticketplus_proxy_from_env, repr=False)
     worker_alert_channel_ids: tuple[str, ...] = ()
+    quiet_windows: tuple[QuietWindow, ...] = ()
 
     def __post_init__(self):
         validate_ticketplus_proxy(self.ticketplus_proxy)
@@ -162,6 +176,47 @@ def _interval(value, minimum: int) -> tuple[int, int]:
     if high < low:
         raise ValueError("最大間隔不可小於最小間隔")
     return low, high
+
+
+def _clock_minutes(value, *, end=False) -> int:
+    if not isinstance(value, str) or not re.fullmatch(r"\d{2}:\d{2}", value):
+        raise ValueError("低頻時段時間必須使用 HH:MM 格式")
+    hours, minutes = int(value[:2]), int(value[3:])
+    if end and value in {"23:59", "24:00"}:
+        # '23:59' is the natural way to write "until midnight".
+        return 0
+    if hours > 23 or minutes > 59:
+        raise ValueError("低頻時段時間必須介於 00:00 到 23:59")
+    return hours * 60 + minutes
+
+
+def _quiet_windows(value) -> tuple[QuietWindow, ...]:
+    if not isinstance(value, list) or len(value) > 12:
+        raise ValueError("低頻時段必須是陣列，最多 12 個")
+    windows, covered = [], set()
+    for entry in value:
+        if not isinstance(entry, dict) or set(entry) - {
+            "start",
+            "end",
+            "interval_seconds",
+            "pause",
+        }:
+            raise ValueError("低頻時段欄位不正確")
+        pause = _bool(entry.get("pause", False))
+        if pause == ("interval_seconds" in entry):
+            raise ValueError("低頻時段需擇一指定 interval_seconds 或 pause: true")
+        start, end = _clock_minutes(entry.get("start")), _clock_minutes(entry.get("end"), end=True)
+        if start == end:
+            raise ValueError("低頻時段開始與結束時間不可相同")
+        window = QuietWindow(
+            start, end, None if pause else _interval(entry["interval_seconds"], 300)
+        )
+        minutes = window.minutes()
+        if covered & minutes:
+            raise ValueError("低頻時段不可重疊")
+        covered |= minutes
+        windows.append(window)
+    return tuple(windows)
 
 
 def _sequence(value) -> tuple[int, ...]:
@@ -213,6 +268,7 @@ def parse_config(data: dict, directory: Path) -> Config:
             "active_interval_seconds",
             "active_window_seconds",
             "exit_active_after_no_available_checks",
+            "quiet_windows",
         },
     )
     http = _section(
@@ -335,6 +391,7 @@ def parse_config(data: dict, directory: Path) -> Config:
         active_interval=_interval(polling.get("active_interval_seconds", [60, 180]), 60),
         active_window=_int(polling.get("active_window_seconds", 1800)),
         exit_active_checks=_int(polling.get("exit_active_after_no_available_checks", 2)),
+        quiet_windows=_quiet_windows(polling.get("quiet_windows", [])),
         request_gap=_int(http.get("min_request_gap_seconds", 5), 5),
         timeout=_int(http.get("timeout_seconds", 20)),
         backoff=_sequence(http.get("backoff_seconds", [900, 1800, 3600])),
