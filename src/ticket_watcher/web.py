@@ -35,6 +35,7 @@ SETTINGS = {
         "active_interval_seconds",
         "active_window_seconds",
         "exit_active_after_no_available_checks",
+        "quiet_windows",
     },
     "http": {"min_request_gap_seconds", "timeout_seconds"},
     "notifications": {
@@ -45,6 +46,18 @@ SETTINGS = {
         "worker_alert_channel_ids",
     },
 }
+
+
+def _clock(minutes: int) -> str:
+    return f"{minutes // 60:02d}:{minutes % 60:02d}"
+
+
+def quiet_window(window) -> dict:
+    # Midnight is shown as 23:59 so time inputs can display it.
+    value = {"start": _clock(window.start), "end": _clock(window.end) if window.end else "23:59"}
+    if window.interval is None:
+        return {**value, "pause": True}
+    return {**value, "interval_seconds": list(window.interval)}
 
 
 class Conflict(ValueError):
@@ -314,6 +327,7 @@ class Controller:
                 "active_interval_seconds": list(c.active_interval),
                 "active_window_seconds": c.active_window,
                 "exit_active_after_no_available_checks": c.exit_active_checks,
+                "quiet_windows": [quiet_window(w) for w in c.quiet_windows],
             },
             "http": {"min_request_gap_seconds": c.request_gap, "timeout_seconds": c.timeout},
             "notifications": {

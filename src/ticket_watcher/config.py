@@ -107,6 +107,11 @@ class QuietWindow:
     end: int
     interval: tuple[int, int] | None = None  # None pauses normal checks
 
+    def contains(self, minute: int) -> bool:
+        if self.start < self.end:
+            return self.start <= minute < self.end
+        return minute >= self.start or minute < self.end
+
     def minutes(self) -> set[int]:
         if self.start < self.end:
             return set(range(self.start, self.end))

@@ -154,11 +154,34 @@ function renderQueryLogs() {
     return `<article class="event-row"><time datetime="${esc(entry.time)}">${esc(time)}</time><div><h2>${esc(name)} · ${esc(mode)}</h2><p>${esc(details || "本次未發送外部查票請求")}</p><small>${entry.requests} 次請求 · ${(entry.duration_ms/1000).toFixed(1)} 秒${entry.next_at ? ` · 下次預定 ${dateText(entry.next_at)}` : ""}</small></div><div>${badge(entry.status === "COMPLETED" && entry.complete ? "AVAILABLE" : entry.status === "DEFERRED" ? "UNKNOWN" : "ERROR",label)}</div></article>`;
   }).join("") : '<div class="empty"><h2>還沒有查詢紀錄</h2><p>從此版本開始記錄。完成自動或手動查詢後，這裡會顯示結果。</p></div>';
 }
+function lowWindowRow(w = {start:"00:00", end:"07:00", interval_seconds:[10800,12600]}) {
+  const paused = Boolean(w.pause), [low, high] = (w.interval_seconds || [3600,5400]).map((x) => Math.round(x / 60));
+  return `<div class="low-window" role="group" aria-label="低頻時段"><label>開始<input class="lw-start" type="time" value="${esc(w.start)}" required></label><label>結束<input class="lw-end" type="time" value="${esc(w.end)}" required></label><label>方式<select class="lw-mode"><option value="interval" ${paused ? "" : "selected"}>降低頻率</option><option value="pause" ${paused ? "selected" : ""}>暫停查票</option></select></label><label>間隔下限（分）<input class="lw-min" type="number" min="5" value="${low}" required ${paused ? "disabled" : ""}></label><label>間隔上限（分）<input class="lw-max" type="number" min="5" value="${high}" required ${paused ? "disabled" : ""}></label><button type="button" class="quiet danger lw-remove" aria-label="刪除此時段">刪除</button></div>`;
+}
+function readLowWindows() {
+  const covered = new Set(), minutes = (text) => Number(text.slice(0,2)) * 60 + Number(text.slice(3,5));
+  return [...document.querySelectorAll("#low-windows .low-window")].map((row) => {
+    const value = (name) => row.querySelector(name).value;
+    const w = {start:value(".lw-start"), end:value(".lw-end")};
+    const start = minutes(w.start), end = w.end === "23:59" ? 1440 : minutes(w.end);
+    if (start === end % 1440) throw new Error("低頻時段的開始與結束時間不可相同。");
+    for (let m = start; m !== end; m = (m + 1) % 1440) {
+      if (covered.has(m)) throw new Error(`低頻時段 ${w.start}～${w.end} 與其他時段重疊。`);
+      covered.add(m);
+      if (m + 1 === end) break;
+    }
+    if (value(".lw-mode") === "pause") return {...w, pause:true};
+    const low = Number(value(".lw-min")), high = Number(value(".lw-max"));
+    if (high < low) throw new Error("低頻時段的間隔上限不可小於下限。");
+    return {...w, interval_seconds:[low * 60, high * 60]};
+  });
+}
 function fillSettings() {
   if (settingsDirty) return;
   const s = state.settings, form = $("#settings-form");
   const values = {normal_min:s.polling.normal_interval_seconds[0], normal_max:s.polling.normal_interval_seconds[1], active_min:s.polling.active_interval_seconds[0], active_max:s.polling.active_interval_seconds[1], active_window:s.polling.active_window_seconds, exit_checks:s.polling.exit_active_after_no_available_checks, request_gap:s.http.min_request_gap_seconds, timeout:s.http.timeout_seconds, notification_ttl:s.notifications.delivery_ttl_seconds};
   Object.entries(values).forEach(([name,value]) => { form.elements[name].value = value; });
+  $("#low-windows").innerHTML = (s.polling.quiet_windows || []).map(lowWindowRow).join("");
   form.elements.system_alerts.checked = s.notifications.system_alerts_enabled;
   form.elements.worker_alerts.checked = s.notifications.worker_alerts_enabled;
   fillChannels($("#worker-channels"), "worker_channels", s.notifications.worker_alert_channel_ids || [s.notifications.worker_alert_channel_id], "worker-channel-help");
@@ -321,6 +344,22 @@ $("#reveal-webhook").addEventListener("click", () => {
 });
 $("#channel-dialog").addEventListener("close", () => { $("#webhook-url").value = ""; });
 $("#settings-form").addEventListener("input", () => { settingsDirty = true; });
+$("#add-low-window").addEventListener("click", () => {
+  settingsDirty = true;
+  $("#low-windows").insertAdjacentHTML("beforeend", lowWindowRow());
+  $("#low-windows .low-window:last-child .lw-start").focus();
+});
+$("#low-windows").addEventListener("click", (event) => {
+  if (!event.target.matches(".lw-remove")) return;
+  settingsDirty = true;
+  event.target.closest(".low-window").remove();
+  $("#add-low-window").focus();
+});
+$("#low-windows").addEventListener("change", (event) => {
+  if (!event.target.matches(".lw-mode")) return;
+  const row = event.target.closest(".low-window");
+  row.querySelectorAll(".lw-min,.lw-max").forEach((input) => { input.disabled = event.target.value === "pause"; });
+});
 const ids = (value) => value.split(/[\s,，]+/).filter(Boolean);
 document.querySelectorAll("form").forEach((form) => form.addEventListener("submit", async (event) => {
   event.preventDefault();
@@ -337,7 +376,7 @@ document.querySelectorAll("form").forEach((form) => form.addEventListener("submi
     } else {
       const n = (name) => Number(f[name].value);
       if (n("normal_max") < n("normal_min") || n("active_max") < n("active_min")) throw new Error("間隔上限不可小於下限。");
-      value = {polling:{normal_interval_seconds:[n("normal_min"),n("normal_max")],active_interval_seconds:[n("active_min"),n("active_max")],active_window_seconds:n("active_window"),exit_active_after_no_available_checks:n("exit_checks")},http:{min_request_gap_seconds:n("request_gap"),timeout_seconds:n("timeout")},notifications:{delivery_ttl_seconds:n("notification_ttl"),system_alerts_enabled:f.system_alerts.checked,worker_alerts_enabled:f.worker_alerts.checked,worker_alert_channel_ids:selectedChannels(form,"worker_channels",$("#worker-channels"))}};
+      value = {polling:{normal_interval_seconds:[n("normal_min"),n("normal_max")],active_interval_seconds:[n("active_min"),n("active_max")],active_window_seconds:n("active_window"),exit_active_after_no_available_checks:n("exit_checks"),quiet_windows:readLowWindows()},http:{min_request_gap_seconds:n("request_gap"),timeout_seconds:n("timeout")},notifications:{delivery_ttl_seconds:n("notification_ttl"),system_alerts_enabled:f.system_alerts.checked,worker_alerts_enabled:f.worker_alerts.checked,worker_alert_channel_ids:selectedChannels(form,"worker_channels",$("#worker-channels"))}};
       path = "/api/settings"; message = "已儲存並套用設定";
     }
     if (form.dataset.id) path += `/${form.dataset.id}`;

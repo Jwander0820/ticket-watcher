@@ -1,10 +1,46 @@
 """Monitoring deadlines from verified TicketPlus session date/time fields."""
 
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from .models import timestamp
+
+# Leaving a quiet window is spread out so checks never land exactly on the hour.
+QUIET_EXIT_JITTER_SECONDS = (60, 600)
+
+
+def _quiet_window(config, at: float):
+    local = datetime.fromtimestamp(at, ZoneInfo(config.timezone))
+    minute = local.hour * 60 + local.minute
+    return next((w for w in config.quiet_windows if w.contains(minute)), None), local
+
+
+def _window_exit(window, local: datetime, rng) -> float:
+    midnight = local.replace(hour=0, minute=0, second=0, microsecond=0)
+    end = next(
+        end
+        for days in (0, 1)
+        if (end := midnight + timedelta(days=days, minutes=window.end)) > local
+    )
+    return end.timestamp() + rng.randint(*QUIET_EXIT_JITTER_SECONDS)
+
+
+def normal_next_check(config, now: float, rng) -> float:
+    # Quiet windows replace only the NORMAL interval; ACTIVE mode stays fast.
+    window, local = _quiet_window(config, now)
+    if window is None:
+        next_check = now + rng.randint(*config.normal_interval)
+    else:
+        exit_at = _window_exit(window, local, rng)
+        if window.interval is None:
+            return exit_at
+        next_check = min(now + rng.randint(*window.interval), exit_at)
+    # A check that would fall inside a paused window waits until it ends.
+    window, local = _quiet_window(config, next_check)
+    if window is not None and window.interval is None:
+        return _window_exit(window, local, rng)
+    return next_check
 
 
 def session_start(date, time) -> float | None:

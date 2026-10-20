@@ -51,6 +51,11 @@
           <div><label for="active-min">快速間隔下限（秒）</label><input id="active-min" name="active_min" type="number" min="60" required></div><div><label for="active-max">快速間隔上限（秒）</label><input id="active-max" name="active_max" type="number" min="60" required></div>
           <div><label for="active-window">快速模式持續時間（秒）</label><input id="active-window" name="active_window" type="number" min="1" required></div><div><label for="exit-checks">連續幾次確認無票後退出快速模式</label><input id="exit-checks" name="exit_checks" type="number" min="1" required></div></div>
         </fieldset>
+        <fieldset><legend>低頻時段</legend><p class="muted">時段內改用較長的一般間隔或完全暫停，最晚在時段結束後 1～10 分鐘恢復一般節奏。偵測到票況線索進入快速模式時不受影響；手動查詢也不受限制。</p>
+          <div id="low-windows" class="low-windows"></div>
+          <p class="hint">依台北時間判斷；開始晚於結束代表跨越午夜，結束填 23:59 代表到午夜為止。時段不可重疊。</p>
+          <button type="button" class="secondary" id="add-low-window">新增時段</button>
+        </fieldset>
         <fieldset><legend>連線與通知</legend><div class="form-grid"><div><label for="request-gap">每個請求至少間隔（秒）</label><input id="request-gap" name="request_gap" type="number" min="5" required></div><div><label for="timeout">連線逾時（秒）</label><input id="timeout" name="timeout" type="number" min="1" required></div><div><label for="notification-ttl">未送出通知保留時間（秒）</label><input id="notification-ttl" name="notification_ttl" type="number" min="1" required></div></div><label class="checkbox"><input id="system-alerts" name="system_alerts" type="checkbox">通知查詢異常與恢復狀態（各監控的通知頻道）</label></fieldset>
         <fieldset><legend>監控服務異常通知</legend>
           <p class="muted">監控意外中止會自動重試；連續失敗時逐步延長，最後每 5 分鐘重試。持續運作 60 秒後才通知恢復；不會解除平台封鎖或人工暫停。</p>

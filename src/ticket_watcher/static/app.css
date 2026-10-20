@@ -86,3 +86,4 @@
   .target-list[data-layout=list] .ticket-actions button{min-height:44px}
   .target-list[data-layout=list] .ticket-areas>summary{min-height:44px;padding:10px 0}
 }
+.low-windows{display:grid;gap:10px;margin-top:6px}.low-window{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:4px 12px;align-items:end;padding:4px 14px 14px;border:1px solid var(--line);border-radius:8px}.low-window label{margin:10px 0 5px;font-size:12px}.low-window input:disabled{background:#f0f4f8;color:var(--muted)}.low-window .lw-remove{font-size:12px;justify-self:start}#add-low-window{margin-top:4px}@media(max-width:760px){.low-window{grid-template-columns:1fr 1fr}}

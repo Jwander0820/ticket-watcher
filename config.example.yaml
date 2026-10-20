@@ -9,6 +9,7 @@ polling:
   active_interval_seconds: [60, 180]
   active_window_seconds: 1800
   exit_active_after_no_available_checks: 2
+  quiet_windows: []  # 低頻時段，例如 {start: "00:00", end: "07:00", interval_seconds: [10800, 12600]}
 
 http:
   platform_concurrency: 1

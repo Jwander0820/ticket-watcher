@@ -18,7 +18,7 @@ from .notification_text import SIGNAL_STATUSES, ticket_parts
 from .notifications import DiscordNotifier
 from .platforms.ticketplus import TicketPlusAdapter
 from .query_log import QueryLog
-from .schedule import stop_info, stopped_sessions
+from .schedule import normal_next_check, stop_info, stopped_sessions
 from .storage import LeaseLost, PlatformRestricted, Store
 from .transport import PublicTransport
 
@@ -532,10 +532,11 @@ class Watcher:
                 active_until = None
             parses = 0 if complete else old["parse_failures"] + 1
             pause = "PARSE" if parses >= 3 else None
-            interval = (
-                self.config.active_interval if mode == "ACTIVE" else self.config.normal_interval
+            next_check = (
+                self.clock() + self.rng.randint(*self.config.active_interval)
+                if mode == "ACTIVE"
+                else normal_next_check(self.config, self.clock(), self.rng)
             )
-            next_check = self.clock() + self.rng.randint(*interval)
             if not complete:
                 next_check = max(
                     next_check,

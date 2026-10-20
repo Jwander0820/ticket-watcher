@@ -507,3 +507,34 @@ def test_changing_channel_cancels_old_notice_without_resetting_ticket_baseline(h
         asyncio.run(scenario())
     finally:
         w.store.close()
+
+
+def test_settings_round_trip_quiet_windows(tmp_path):
+    windows = [
+        {"start": "00:00", "end": "07:00", "interval_seconds": [10800, 12600]},
+        {"start": "20:00", "end": "23:59", "pause": True},
+    ]
+
+    async def scenario():
+        async with panel(tmp_path) as (client, c, requests):
+            state = await snapshot(client)
+            response = await mutate(
+                client, state, "/api/settings", {"polling": {"quiet_windows": windows}}
+            )
+            assert response.status == 200
+            state = await response.json()
+            assert state["settings"]["polling"]["quiet_windows"] == windows
+            assert len(c.watcher.config.quiet_windows) == 2
+            assert load_config(c.path).quiet_windows == c.watcher.config.quiet_windows
+            overlap = [windows[0], {"start": "06:00", "end": "08:00", "pause": True}]
+            response = await mutate(
+                client, state, "/api/settings", {"polling": {"quiet_windows": overlap}}
+            )
+            assert response.status == 400
+            state = await snapshot(client)
+            state = await (
+                await mutate(client, state, "/api/settings", {"polling": {"quiet_windows": []}})
+            ).json()
+            assert state["settings"]["polling"]["quiet_windows"] == []
+
+    asyncio.run(scenario())
