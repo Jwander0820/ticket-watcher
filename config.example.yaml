@@ -15,6 +15,7 @@ http:
   platform_concurrency: 1
   min_request_gap_seconds: [5, 15]  # 每個請求完成後隨機等待；舊的單一數字仍可用
   timeout_seconds: 20
+  metadata_cache_seconds: 604800  # 基本資料保存七天；0 表示不自動到期，可從控制台手動更新
   backoff_seconds: [900, 1800, 3600]
 
 notifications:

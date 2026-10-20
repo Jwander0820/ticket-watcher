@@ -37,7 +37,7 @@ SETTINGS = {
         "exit_active_after_no_available_checks",
         "quiet_windows",
     },
-    "http": {"min_request_gap_seconds", "timeout_seconds"},
+    "http": {"min_request_gap_seconds", "timeout_seconds", "metadata_cache_seconds"},
     "notifications": {
         "system_alerts_enabled",
         "delivery_ttl_seconds",
@@ -332,6 +332,7 @@ class Controller:
             "http": {
                 "min_request_gap_seconds": list(c.request_gap),
                 "timeout_seconds": c.timeout,
+                "metadata_cache_seconds": c.metadata_cache_seconds,
             },
             "notifications": {
                 "system_alerts_enabled": c.system_alerts,
@@ -665,6 +666,8 @@ async def action(request):
             task = c.begin_action(deliver_test(c.watcher, event_id))
         elif kind == "check":
             task = c.begin_action(manual_check(c.watcher, body.get("target_id")))
+        elif kind == "refresh-metadata":
+            task = c.begin_action(manual_refresh_metadata(c.watcher, body.get("target_id")))
         elif kind == "resume":
             return web.json_response(
                 c.watcher.resume(
@@ -681,6 +684,10 @@ async def action(request):
         if asyncio.current_task().cancelling():
             raise
         raise Conflict("設定已重新載入或監控正在重啟，本次操作已中止。") from None
+
+
+async def manual_refresh_metadata(watcher, ident):
+    return (await watcher.refresh_metadata(ident)).to_dict()
 
 
 async def manual_check(watcher, ident):

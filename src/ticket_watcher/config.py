@@ -142,6 +142,7 @@ class Config:
     ticketplus_proxy: str = field(default_factory=_ticketplus_proxy_from_env, repr=False)
     worker_alert_channel_ids: tuple[str, ...] = ()
     quiet_windows: tuple[QuietWindow, ...] = ()
+    metadata_cache_seconds: int = 7 * 24 * 60 * 60
 
     def __post_init__(self):
         validate_ticketplus_proxy(self.ticketplus_proxy)
@@ -286,7 +287,13 @@ def parse_config(data: dict, directory: Path) -> Config:
     http = _section(
         data,
         "http",
-        {"platform_concurrency", "min_request_gap_seconds", "backoff_seconds", "timeout_seconds"},
+        {
+            "platform_concurrency",
+            "min_request_gap_seconds",
+            "backoff_seconds",
+            "timeout_seconds",
+            "metadata_cache_seconds",
+        },
     )
     notice = _section(
         data,
@@ -406,6 +413,7 @@ def parse_config(data: dict, directory: Path) -> Config:
         quiet_windows=_quiet_windows(polling.get("quiet_windows", [])),
         request_gap=_request_gap(http.get("min_request_gap_seconds", [5, 15])),
         timeout=_int(http.get("timeout_seconds", 20)),
+        metadata_cache_seconds=_int(http.get("metadata_cache_seconds", 604800), 0),
         backoff=_sequence(http.get("backoff_seconds", [900, 1800, 3600])),
         webhook_url_env=env_name,
         system_alerts=_bool(notice.get("system_alerts_enabled", True)),

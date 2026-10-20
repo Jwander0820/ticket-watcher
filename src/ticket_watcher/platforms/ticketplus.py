@@ -54,7 +54,28 @@ class TicketPlusAdapter:
     def __init__(self, transport: PublicTransport):
         self.transport = transport
 
-    async def fetch(self, target: Target) -> Observation:
+    def _cached(self, key, force):
+        return (
+            None
+            if force
+            else self.transport.store.metadata(
+                key, self.transport.clock(), max_age=self.transport.config.metadata_cache_seconds
+            )
+        )
+
+    def _save_metadata(self, updates):
+        if not updates:
+            return
+        now = self.transport.clock()
+        self.transport.store.cache_metadata_many(
+            updates,
+            now + self.transport.config.metadata_cache_seconds,
+            owner=self.transport.owner,
+            clock=self.transport.clock,
+            created_at=now,
+        )
+
+    async def _context(self, target, force, updates):
         url = validate_url(target.url)
         path = url.split("/")[3:]
         order_session = internal_id(path[2], "s") if path[0] == "order" else None
@@ -67,9 +88,7 @@ class TicketPlusAdapter:
             )
         event_id = internal_id(path[1], "e")
         event_public_id = public_id(event_id)
-        url = f"https://ticketplus.com.tw/activity/{event_public_id}"
-        before = self.transport.count
-        metadata = self.transport.store.metadata(event_id, self.transport.clock())
+        metadata = self._cached(event_id, force)
         cached = metadata is not None
         if metadata is None:
             event = await self.transport.get_json(
@@ -83,13 +102,7 @@ class TicketPlusAdapter:
             ):
                 raise SourceError("PARSE", "活動或場次靜態資料結構改變")
             metadata = {"title": event["title"], "sessions": sessions["sessions"]}
-            self.transport.store.cache_metadata(
-                event_id,
-                metadata,
-                self.transport.clock() + 3600,
-                owner=self.transport.owner,
-                clock=self.transport.clock,
-            )
+            updates[event_id] = metadata
         visible = []
         for session in metadata["sessions"]:
             if not isinstance(session, dict):
@@ -104,9 +117,10 @@ class TicketPlusAdapter:
         available_ids = {x[0] for x in visible}
         if wanted - available_ids:
             # Don't cache a stale list after detecting a requested session is missing.
-            self.transport.store.discard_metadata(
-                event_id, owner=self.transport.owner, clock=self.transport.clock
-            )
+            if not force:
+                self.transport.store.discard_metadata(
+                    event_id, owner=self.transport.owner, clock=self.transport.clock
+                )
             raise SourceError(
                 "PARSE" if cached else "UNSUPPORTED", "指定場次不在此活動的公開場次清單"
             )
@@ -114,11 +128,36 @@ class TicketPlusAdapter:
             raise SourceError("PARSE", "活動沒有可辨識的公開場次，或 ID 重複")
         if len(visible) > 100:
             raise SourceError("UNSUPPORTED", "活動場次數超過目前單次批次查詢上限")
+        return event_id, event_public_id, order_session, wanted, metadata, visible
+
+    async def refresh_metadata(self, target: Target) -> dict:
+        # Stage all resources: a failed/cancelled refresh must keep the old cache.
+        updates = {}
+        _, public, order, wanted, metadata, visible = await self._context(target, True, updates)
+        if order:
+            session = next(row for ident, row in visible if ident == order)
+            await self._inventory_list(target, public, order, session, True, updates)
+        self._save_metadata(updates)
+        return {
+            ident: session_start(row.get("date"), row.get("time"))
+            for ident, row in visible
+            if not wanted or ident in wanted
+        }
+
+    async def fetch(self, target: Target) -> Observation:
+        before = self.transport.count
+        updates = {}
+        event_id, event_public_id, order_session, wanted, metadata, visible = await self._context(
+            target, False, updates
+        )
         if order_session:
-            session = next(session for ident, session in visible if ident == order_session)
+            session = next(row for ident, row in visible if ident == order_session)
             return await self._inventory(
-                target, event_public_id, order_session, metadata, session, before
+                target, event_public_id, order_session, metadata, session, before, updates
             )
+        self._save_metadata(updates)
+        url = f"https://ticketplus.com.tw/activity/{event_public_id}"
+        available_ids = {ident for ident, _ in visible}
         data = await self.transport.get_json(
             STATUS_API, {"eventId": event_id, "sessionId": ",".join(sorted(available_ids))}
         )
@@ -183,15 +222,7 @@ class TicketPlusAdapter:
             },
         )
 
-    async def _inventory(
-        self,
-        target: Target,
-        event_public_id: str,
-        session_id: str,
-        metadata: dict,
-        session: dict,
-        before: int,
-    ) -> Observation:
+    async def _inventory_list(self, target, event_public_id, session_id, session, force, updates):
         # Follow the site's order-page data flow. Seated events expose area inventory;
         # events without areas expose product (ticket-type) inventory.
         is_area = session.get("ticketArea")
@@ -203,7 +234,7 @@ class TicketPlusAdapter:
         response_field = "ticketArea" if is_area else "product"
         prefix = "a" if is_area else "p"
         cache_key = f"{kind}/{event_public_id}"
-        static = self.transport.store.metadata(cache_key, self.transport.clock())
+        static = self._cached(cache_key, force)
         cached = static is not None
         if static is None:
             static = await self.transport.get_json(
@@ -211,13 +242,7 @@ class TicketPlusAdapter:
             )
             if not isinstance(static.get(collection), list):
                 raise SourceError("PARSE", "票區或票種靜態資料結構改變")
-            self.transport.store.cache_metadata(
-                cache_key,
-                static,
-                self.transport.clock() + 3600,
-                owner=self.transport.owner,
-                clock=self.transport.clock,
-            )
+            updates[cache_key] = static
         visible = {}
         for row in static[collection]:
             if not isinstance(row, dict) or not isinstance(row.get("sessionId"), str):
@@ -232,14 +257,32 @@ class TicketPlusAdapter:
             visible[ident] = row
         wanted = {internal_id(x, prefix) for x in target.item_ids}
         if wanted - set(visible):
-            self.transport.store.discard_metadata(
-                cache_key, owner=self.transport.owner, clock=self.transport.clock
-            )
+            if not force:
+                self.transport.store.discard_metadata(
+                    cache_key, owner=self.transport.owner, clock=self.transport.clock
+                )
             raise SourceError("PARSE" if cached else "UNSUPPORTED", "指定項目不在此場次的公開清單")
         if not visible:
             raise SourceError("PARSE", "場次沒有可辨識的公開票區或票種")
         if len(visible) > 1000:
             raise SourceError("UNSUPPORTED", "場次項目數超過目前完整查詢上限")
+        return is_area, ident_field, response_field, visible, wanted
+
+    async def _inventory(
+        self,
+        target: Target,
+        event_public_id: str,
+        session_id: str,
+        metadata: dict,
+        session: dict,
+        before: int,
+        updates: dict,
+    ) -> Observation:
+        is_area, ident_field, response_field, visible, wanted = await self._inventory_list(
+            target, event_public_id, session_id, session, False, updates
+        )
+        kind = "area" if is_area else "product"
+        self._save_metadata(updates)
         # Validate against the full static list, then fetch every selected item.
         # Send the complete selection in one dynamic request. Never split/retry a
         # rejected or incomplete response; missing items remain UNKNOWN below.

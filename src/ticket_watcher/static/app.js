@@ -6,6 +6,7 @@ const noticeLabels = {PENDING:"待送", INFLIGHT:"傳送中", SENT:"已送達", 
 const eventLabels = {RELEASE:"偵測到可購票", RELEASE_HINT:"發現釋票線索", SYSTEM:"系統通知", ERROR:"查詢異常", STATE_CHANGE:"票況變化"};
 let state = null, view = "targets", settingsDirty = false, refreshing = false, refreshAgain = false, serviceChanging = false, toastTimer;
 const checking = new Set();
+const metadataRefreshing = new Set();
 const renderedViews = new Map();
 const targetLayouts = new Set(["compact", "list", "detail"]);
 const layoutStorageKey = "ticket-watcher.target-layout";
@@ -120,7 +121,7 @@ function renderTargets() {
     const unknown = (s.current_observation?.UNKNOWN || 0) > 0;
     const stopText = effectiveStop(t) ? dateText(effectiveStop(t)) : t.auto_stop ? "待取得可靠場次時間" : "未設定";
     const order = t.url.includes("/order/"), scope = t.item_ids.length ? `指定 ${t.item_ids.length} 個票區／票種` : order ? "全部票區／票種" : t.session_ids.length ? `指定 ${t.session_ids.length} 個場次` : "全部活動場次";
-    return `<article class="ticket"><div class="ticket-stub ${on && !s.paused_reason ? "on" : ""}"><span>${order ? "票區／票種" : "活動場次"}</span><strong>${label}</strong></div><div class="ticket-main"><div class="ticket-heading"><div><h3 class="ticket-title">${esc(t.name)}</h3><p class="ticket-scope">${esc(scope)}</p></div><a class="ticket-link" href="${esc(t.url)}" target="_blank" rel="noreferrer">購票頁 ↗</a></div><div class="badge-group" aria-label="最後有效票況">${summary}${stopped && s.auto_stop_at === effectiveStop(t) ? badge("ENDED","演出已開始") : ""}${unknown ? badge("ERROR","本次票況不完整") : ""}${s.mode === "ACTIVE" ? badge("AVAILABLE","快速模式") : ""}</div><dl class="ticket-details"><div><dt>上次完整觀測</dt><dd>${dateText(s.observed_at)}</dd></div><div><dt>下次預定查詢</dt><dd>${on ? dateText(s.next_allowed_at) : "—"}</dd></div><div><dt>Discord 通知頻道</dt><dd>${esc(targetChannels(t).map(channelName).join("、"))}</dd></div><div><dt>停止監控時間</dt><dd>${esc(stopText)}${s.stopped_session_count ? ` · ${s.stopped_session_count} 場已開始` : ""}</dd></div></dl><div class="ticket-actions"><button class="quiet" data-action="edit-target" data-id="${esc(t.id)}">編輯</button><button class="quiet" data-action="toggle-target" data-id="${esc(t.id)}">${t.enabled ? "停用" : "啟用"}</button><button class="quiet" data-action="check" data-id="${esc(t.id)}" ${!on ? "disabled" : ""}>查詢一次</button>${s.paused_reason ? `<button class="quiet" data-action="resume" data-id="${esc(t.id)}">解除暫停</button>` : ""}<button class="quiet danger" data-action="delete-target" data-id="${esc(t.id)}">刪除</button></div><details class="ticket-areas" data-id="${esc(t.id)}" ${expandedTargets.has(t.id) ? "open" : ""}><summary>${order ? "票區／票種明細" : "活動場次明細"}</summary><div class="ticket-area-content">${itemMarkup(itemPages.get(t.id))}</div></details></div></article>`;
+    return `<article class="ticket"><div class="ticket-stub ${on && !s.paused_reason ? "on" : ""}"><span>${order ? "票區／票種" : "活動場次"}</span><strong>${label}</strong></div><div class="ticket-main"><div class="ticket-heading"><div><h3 class="ticket-title">${esc(t.name)}</h3><p class="ticket-scope">${esc(scope)}</p></div><a class="ticket-link" href="${esc(t.url)}" target="_blank" rel="noreferrer">購票頁 ↗</a></div><div class="badge-group" aria-label="最後有效票況">${summary}${stopped && s.auto_stop_at === effectiveStop(t) ? badge("ENDED","演出已開始") : ""}${unknown ? badge("ERROR","本次票況不完整") : ""}${s.mode === "ACTIVE" ? badge("AVAILABLE","快速模式") : ""}</div><dl class="ticket-details"><div><dt>上次完整觀測</dt><dd>${dateText(s.observed_at)}</dd></div><div><dt>下次預定查詢</dt><dd>${on ? dateText(s.next_allowed_at) : "—"}</dd></div><div><dt>Discord 通知頻道</dt><dd>${esc(targetChannels(t).map(channelName).join("、"))}</dd></div><div><dt>停止監控時間</dt><dd>${esc(stopText)}${s.stopped_session_count ? ` · ${s.stopped_session_count} 場已開始` : ""}</dd></div></dl><div class="ticket-actions"><button class="quiet" data-action="edit-target" data-id="${esc(t.id)}">編輯</button><button class="quiet" data-action="toggle-target" data-id="${esc(t.id)}">${t.enabled ? "停用" : "啟用"}</button><button class="quiet" data-action="check" data-id="${esc(t.id)}" ${!on ? "disabled" : ""}>查詢一次</button><button class="quiet" data-action="refresh-metadata" data-id="${esc(t.id)}" ${state.ui_paused || state.health.platform_paused ? "disabled" : ""}>更新基本資料</button>${s.paused_reason ? `<button class="quiet" data-action="resume" data-id="${esc(t.id)}">解除暫停</button>` : ""}<button class="quiet danger" data-action="delete-target" data-id="${esc(t.id)}">刪除</button></div><details class="ticket-areas" data-id="${esc(t.id)}" ${expandedTargets.has(t.id) ? "open" : ""}><summary>${order ? "票區／票種明細" : "活動場次明細"}</summary><div class="ticket-area-content">${itemMarkup(itemPages.get(t.id))}</div></details></div></article>`;
   }).join("") : `<div class="empty"><div class="empty-ticket" aria-hidden="true"></div><h2>留意下一張好票</h2><p>新增 TicketPlus 活動或場次網址。先設定監控與通知頻道，再開始追蹤票況。</p><button class="primary" data-action="add-target">＋ 新增第一個監控</button></div>`;
   const ids = new Set(state.targets.map((t) => t.id));
   for (const id of itemPages.keys()) if (!ids.has(id)) { itemPages.delete(id); expandedTargets.delete(id); }
@@ -146,12 +147,12 @@ function renderQueryLogs() {
   $("#log-error").hidden = !logs.error; $("#log-error").textContent = logs.error || "";
   $("#query-log-list").innerHTML = logs.entries.length ? logs.entries.map((entry) => {
     const name = state.targets.find((t) => t.id === entry.target_id)?.name || (entry.target_id ? "已移除的監控" : "單次公開查詢");
-    const label = entry.status === "COMPLETED" ? entry.complete ? "查詢成功" : "票況不完整" : {DEFERRED:"等待中",INTERRUPTED:"已中斷",FAILED:"查詢失敗",UNSUPPORTED:"不支援"}[entry.status] || entry.status;
-    const mode = {scheduled:"自動監控",manual:"手動查詢",check:"排程檢查",query:"單次查詢"}[entry.mode] || entry.mode;
+    const label = entry.status === "COMPLETED" ? entry.mode === "metadata" ? "更新成功" : entry.complete ? "查詢成功" : "票況不完整" : {DEFERRED:"等待中",INTERRUPTED:"已中斷",FAILED:"查詢失敗",UNSUPPORTED:"不支援"}[entry.status] || entry.status;
+    const mode = {scheduled:"自動監控",manual:"手動查詢",check:"排程檢查",query:"單次查詢",metadata:"更新基本資料"}[entry.mode] || entry.mode;
     const summary = Object.entries(entry.summary).map(([status,count]) => `${ticketLabels[status] || status} ${count}`).join("・");
     const details = [summary,reasonLabels[entry.reason] || entry.reason,entry.release ? "偵測到可購票" : "",entry.hint ? "發現釋票線索" : ""].filter(Boolean).join("・");
     const time = new Date(entry.time).toLocaleString("zh-TW",{hour12:false});
-    return `<article class="event-row"><time datetime="${esc(entry.time)}">${esc(time)}</time><div><h2>${esc(name)} · ${esc(mode)}</h2><p>${esc(details || "本次未發送外部查票請求")}</p><small>${entry.requests} 次請求 · ${(entry.duration_ms/1000).toFixed(1)} 秒${entry.next_at ? ` · 下次預定 ${dateText(entry.next_at)}` : ""}</small></div><div>${badge(entry.status === "COMPLETED" && entry.complete ? "AVAILABLE" : entry.status === "DEFERRED" ? "UNKNOWN" : "ERROR",label)}</div></article>`;
+    return `<article class="event-row"><time datetime="${esc(entry.time)}">${esc(time)}</time><div><h2>${esc(name)} · ${esc(mode)}</h2><p>${esc(details || (entry.mode === "metadata" && entry.status === "COMPLETED" ? "基本資料已更新，票況維持原觀測" : "本次未發送外部查票請求"))}</p><small>${entry.requests} 次請求 · ${(entry.duration_ms/1000).toFixed(1)} 秒${entry.next_at ? ` · 下次預定 ${dateText(entry.next_at)}` : ""}</small></div><div>${badge(entry.status === "COMPLETED" && (entry.complete || entry.mode === "metadata") ? "AVAILABLE" : entry.status === "DEFERRED" ? "UNKNOWN" : "ERROR",label)}</div></article>`;
   }).join("") : '<div class="empty"><h2>還沒有查詢紀錄</h2><p>從此版本開始記錄。完成自動或手動查詢後，這裡會顯示結果。</p></div>';
 }
 function lowWindowRow(w = {start:"00:00", end:"07:00", interval_seconds:[10800,12600]}) {
@@ -179,7 +180,7 @@ function readLowWindows() {
 function fillSettings() {
   if (settingsDirty) return;
   const s = state.settings, form = $("#settings-form");
-  const values = {normal_min:s.polling.normal_interval_seconds[0], normal_max:s.polling.normal_interval_seconds[1], active_min:s.polling.active_interval_seconds[0], active_max:s.polling.active_interval_seconds[1], active_window:s.polling.active_window_seconds, exit_checks:s.polling.exit_active_after_no_available_checks, request_gap_min:s.http.min_request_gap_seconds[0], request_gap_max:s.http.min_request_gap_seconds[1], timeout:s.http.timeout_seconds, notification_ttl:s.notifications.delivery_ttl_seconds};
+  const values = {normal_min:s.polling.normal_interval_seconds[0], normal_max:s.polling.normal_interval_seconds[1], active_min:s.polling.active_interval_seconds[0], active_max:s.polling.active_interval_seconds[1], active_window:s.polling.active_window_seconds, exit_checks:s.polling.exit_active_after_no_available_checks, request_gap_min:s.http.min_request_gap_seconds[0], request_gap_max:s.http.min_request_gap_seconds[1], timeout:s.http.timeout_seconds, metadata_cache_days:s.http.metadata_cache_seconds / 86400, notification_ttl:s.notifications.delivery_ttl_seconds};
   Object.entries(values).forEach(([name,value]) => { form.elements[name].value = value; });
   $("#low-windows").innerHTML = (s.polling.quiet_windows || []).map(lowWindowRow).join("");
   form.elements.system_alerts.checked = s.notifications.system_alerts_enabled;
@@ -208,6 +209,11 @@ function render() {
       button.disabled = busy || state.ui_paused || !target.enabled || isStopped(target);
       const label = busy ? "查詢中…" : "查詢一次";
       if (button.textContent !== label) button.textContent = label;
+    });
+    document.querySelectorAll('[data-action="refresh-metadata"]').forEach((button) => {
+      const busy = metadataRefreshing.has(button.dataset.id);
+      button.disabled = busy || state.ui_paused || state.health.platform_paused;
+      button.textContent = busy ? "更新中…" : "更新基本資料";
     });
   } else if (view === "channels") renderChanged(view, [state.channels, state.ui_paused], renderChannels);
   else if (view === "events" && state.events) renderChanged(view, [state.events, state.targets], renderEvents);
@@ -308,6 +314,12 @@ async function action(button) {
   const endpoint = kind === "resume-platform" ? "resume" : kind;
   const result = await api(`/api/actions/${endpoint}`, {method:"POST", body:{revision, target_id:id, channel_id:id, platform:kind === "resume-platform"}});
   if (kind === "test-channel") toast(`測試通知：${noticeLabels[result.notification.status] || result.notification.status}`);
+  else if (kind === "refresh-metadata") {
+    if (result.execution_status === "COMPLETED") {
+      itemPages.clear();
+      toast("已更新同活動共用的基本資料；最新票況將於下次查詢更新。");
+    } else toast(result.execution_status === "DEFERRED" ? `${reasonLabels[result.reason] || "目前尚不能更新"}${result.next_allowed_at ? `；等待至 ${dateText(result.next_allowed_at)}` : ""}` : result.error?.message || "基本資料更新失敗，已保留舊快取。");
+  }
   else if (kind === "check") toast(result.execution_status === "DEFERRED" ? `${reasonLabels[result.reason] || "目前尚不能查詢"}${result.next_allowed_at ? `；等待至 ${dateText(result.next_allowed_at)}` : ""}` : result.execution_status === "COMPLETED" ? result.complete ? "查詢完成，已更新票況。" : "本次票況不完整，已保留最後有效票況。" : result.error?.message || "查詢失敗，已保留最後有效票況。");
   else toast("已解除暫停，等待排程查詢。");
   await refresh();
@@ -323,12 +335,15 @@ document.addEventListener("click", async (event) => {
   }
   if (button.dataset.action === "load-items") { await loadTargetItems(button.dataset.id, true); return; }
   if (!button.dataset.action || !state) return;
+  const metadataId = button.dataset.action === "refresh-metadata" ? button.dataset.id : null;
+  if (metadataId) { if (metadataRefreshing.has(metadataId)) return; metadataRefreshing.add(metadataId); button.textContent = "更新中…"; }
   const checkingId = button.dataset.action === "check" ? button.dataset.id : null;
   if (checkingId) { if (checking.has(checkingId)) return; checking.add(checkingId); button.textContent = "查詢中…"; }
   button.disabled = true;
   try { await action(button); } catch (error) { toast(error.message); } finally {
     button.disabled = false;
     if (checkingId) checking.delete(checkingId);
+    if (metadataId) metadataRefreshing.delete(metadataId);
     render();
   }
 });
@@ -376,7 +391,7 @@ document.querySelectorAll("form").forEach((form) => form.addEventListener("submi
     } else {
       const n = (name) => Number(f[name].value);
       if (n("normal_max") < n("normal_min") || n("active_max") < n("active_min") || n("request_gap_max") < n("request_gap_min")) throw new Error("間隔上限不可小於下限。");
-      value = {polling:{normal_interval_seconds:[n("normal_min"),n("normal_max")],active_interval_seconds:[n("active_min"),n("active_max")],active_window_seconds:n("active_window"),exit_active_after_no_available_checks:n("exit_checks"),quiet_windows:readLowWindows()},http:{min_request_gap_seconds:[n("request_gap_min"),n("request_gap_max")],timeout_seconds:n("timeout")},notifications:{delivery_ttl_seconds:n("notification_ttl"),system_alerts_enabled:f.system_alerts.checked,worker_alerts_enabled:f.worker_alerts.checked,worker_alert_channel_ids:selectedChannels(form,"worker_channels",$("#worker-channels"))}};
+      value = {polling:{normal_interval_seconds:[n("normal_min"),n("normal_max")],active_interval_seconds:[n("active_min"),n("active_max")],active_window_seconds:n("active_window"),exit_active_after_no_available_checks:n("exit_checks"),quiet_windows:readLowWindows()},http:{min_request_gap_seconds:[n("request_gap_min"),n("request_gap_max")],timeout_seconds:n("timeout"),metadata_cache_seconds:Math.round(n("metadata_cache_days") * 86400)},notifications:{delivery_ttl_seconds:n("notification_ttl"),system_alerts_enabled:f.system_alerts.checked,worker_alerts_enabled:f.worker_alerts.checked,worker_alert_channel_ids:selectedChannels(form,"worker_channels",$("#worker-channels"))}};
       path = "/api/settings"; message = "已儲存並套用設定";
     }
     if (form.dataset.id) path += `/${form.dataset.id}`;

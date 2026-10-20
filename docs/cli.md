@@ -32,7 +32,7 @@ ticket-watcher --config config.yaml query --url "https://ticketplus.com.tw/order
 
 替換尖括號佔位值後執行。`--session-id` 與 `--item-id` 可重複指定；`activity` 不接受 `--item-id`。完整活動結果包含各場 `order_url`，內頁結果只回報票區／票種，不推論逐席位置。
 
-`query` 每次取得動態票況，名稱／場次等靜態資料最多快取一小時。它沒有監控比較，`evaluation.release_detected` 固定為 `null`，查到有票不代表「剛釋票」。
+`query` 每次取得動態票況，名稱／場次等靜態資料預設快取七天，可透過 `http.metadata_cache_seconds` 調整；`0` 為不自動到期。它沒有監控比較，`evaluation.release_detected` 固定為 `null`，查到有票不代表「剛釋票」。
 
 ## 檢查與常駐
 

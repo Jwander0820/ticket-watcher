@@ -201,6 +201,54 @@ class Watcher:
             self.store.release(owner)
             self.wake()
 
+    async def refresh_metadata(self, ident: str) -> Result:
+        target = self._target(ident)
+        if self.config.ui_paused:
+            return self._deferred("SERVICE_PAUSED")
+        owner = str(uuid.uuid4())
+        state = self.store.acquire(owner, self.clock(), self.transport.lease_seconds)
+        if state:
+            return self._deferred(
+                "PLATFORM_PAUSED" if state["paused_reason"] else "PLATFORM_BUSY_OR_BACKOFF",
+                None
+                if state["paused_reason"]
+                else max(state["blocked_until"], state["lease_until"]),
+            )
+        self.transport.owner, self.transport.count = owner, 0
+        started = time.monotonic()
+        try:
+            self.store.sync_target(target)
+            schedule = self.store.target(ident)
+            if schedule["last_error"] and schedule["next_check"] > self.clock():
+                result = self._deferred("TARGET_BACKOFF", schedule["next_check"])
+            else:
+                try:
+                    sessions = await self.adapter.refresh_metadata(target)
+                except SourceError as error:
+                    # Preserve ticket observations/baselines. Source restrictions
+                    # still pause/back off the shared platform via the normal path.
+                    result = self._error(error, owner=owner)
+                else:
+                    with self.store.transaction() as db:
+                        self.store.require_lease(owner, self.clock())
+                        self.store.save_schedule(db, ident, sessions)
+                    result = Result(
+                        data={
+                            "target_id": ident,
+                            "request_count": self.transport.count,
+                            "evaluation": {"performed": False, "release_detected": None},
+                        }
+                    )
+        except LeaseLost:
+            result = self._deferred("QUERY_SUPERSEDED")
+        except PlatformRestricted as restriction:
+            result = self._deferred(restriction.reason, restriction.next_allowed_at)
+        finally:
+            self.store.release(owner)
+            self.wake()
+        self.query_log.record(ident, "metadata", result, time.monotonic() - started)
+        return result
+
     def _system(self, db, message: str, target_id: str | None = None, *, title=None):
         payload = {"message": message}
         if title:
@@ -907,7 +955,11 @@ class Watcher:
         stop = asyncio.Event()
         self.store.heartbeat(self.clock())
         self.query_log.maintain()
-        self.store.prune(self.clock(), self.config.retention_days)
+        self.store.prune(
+            self.clock(),
+            self.config.retention_days,
+            metadata_max_age=self.config.metadata_cache_seconds,
+        )
         async with asyncio.TaskGroup() as tasks:
             tasks.create_task(self._heartbeat_loop(stop))
             tasks.create_task(self._maintenance_loop(stop))
@@ -934,7 +986,11 @@ class Watcher:
         while not stop.is_set():
             now = self.clock()
             if self.store.next_prune_at(now) <= now:
-                self.store.prune(now, self.config.retention_days)
+                self.store.prune(
+                    now,
+                    self.config.retention_days,
+                    metadata_max_age=self.config.metadata_cache_seconds,
+                )
             if self.query_log.next_rotation_at() <= now:
                 self.query_log.maintain()
             deadlines = (self.store.next_prune_at(now), self.query_log.next_rotation_at())

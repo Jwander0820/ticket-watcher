@@ -244,20 +244,47 @@ class Store:
             (next_request,),
         )
 
-    def metadata(self, key: str, now: float) -> dict | None:
+    def metadata(self, key: str, now: float, *, max_age: int | None = None) -> dict | None:
         row = self.connection.execute(
-            "SELECT payload FROM metadata WHERE key=? AND expires_at>?", (key, now)
+            "SELECT payload,expires_at FROM metadata WHERE key=?", (key,)
         ).fetchone()
-        return json.loads(row[0]) if row else None
+        if row is None:
+            return None
+        value = json.loads(row["payload"])
+        # Legacy entries used a fixed one-hour TTL; apply the current policy to
+        # them too, including entries that have already reached that old expiry.
+        created = value.pop("_cached_at", row["expires_at"] - 3600)
+        if max_age is None:
+            expired = row["expires_at"] <= now
+        else:
+            expired = max_age != 0 and created + max_age <= now
+        return None if expired else value
 
-    def cache_metadata(self, key: str, value: dict, expires_at: float, *, owner=None, clock=None):
+    def cache_metadata(
+        self, key: str, value: dict, expires_at: float, *, owner=None, clock=None, created_at=None
+    ):
+        self.cache_metadata_many(
+            {key: value}, expires_at, owner=owner, clock=clock, created_at=created_at
+        )
+
+    def cache_metadata_many(self, updates, expires_at, *, owner=None, clock=None, created_at=None):
         with self.transaction() as db:
             if owner is not None:
                 self.require_lease(owner, clock())
-            db.execute(
-                "INSERT OR REPLACE INTO metadata VALUES(?,?,?)",
-                (key, expires_at, json.dumps(value, ensure_ascii=False)),
-            )
+            for key, value in updates.items():
+                db.execute(
+                    "INSERT OR REPLACE INTO metadata VALUES(?,?,?)",
+                    (
+                        key,
+                        expires_at,
+                        json.dumps(
+                            {**value, "_cached_at": created_at}
+                            if created_at is not None
+                            else value,
+                            ensure_ascii=False,
+                        ),
+                    ),
+                )
 
     def discard_metadata(self, key: str, *, owner, clock):
         with self.transaction() as db:
@@ -581,7 +608,7 @@ class Store:
         row = self.connection.execute("SELECT value FROM runtime WHERE key='last_prune'").fetchone()
         return float(row[0]) + 3600 if row else now
 
-    def prune(self, now: float, days: int):
+    def prune(self, now: float, days: int, *, metadata_max_age: int | None = None):
         def due():
             return self.next_prune_at(now) <= now
 
@@ -604,5 +631,12 @@ class Store:
                 "DELETE FROM events WHERE created_at<? AND id NOT IN (SELECT event_id FROM outbox)",
                 (cutoff,),
             )
-            db.execute("DELETE FROM metadata WHERE expires_at<?", (now,))
+            if metadata_max_age is None:
+                db.execute("DELETE FROM metadata WHERE expires_at<?", (now,))
+            elif metadata_max_age:
+                db.execute(
+                    """DELETE FROM metadata WHERE
+                    coalesce(json_extract(payload,'$._cached_at'), expires_at-3600)+?<=?""",
+                    (metadata_max_age, now),
+                )
             db.execute("INSERT OR REPLACE INTO runtime VALUES('last_prune',?)", (str(now),))

@@ -27,6 +27,7 @@ class CaseTransport:
     owner = None  # Parser-only fixture; no HTTP request/lease is exercised.
 
     def __init__(self, harness, event):
+        self.config = harness["config"]
         self.store = harness["watcher"].store
         self.clock = harness["clock"]
         self.count = 0

@@ -56,6 +56,7 @@
           <p class="hint">依台北時間判斷；開始晚於結束代表跨越午夜，結束填 23:59 代表到午夜為止。時段不可重疊。</p>
           <button type="button" class="secondary" id="add-low-window">新增時段</button>
         </fieldset>
+        <fieldset><legend>基本資料快取</legend><label for="metadata-cache-days">基本資料保存時間（天）</label><input id="metadata-cache-days" name="metadata_cache_days" type="number" min="0" step="any" required aria-describedby="metadata-cache-help"><p id="metadata-cache-help" class="muted">預設 7 天；填 0 表示不自動到期。即時票況仍依排程查詢。新增或調整票區、價格、場次日期後，請在監控卡片按「更新基本資料」；同活動的場次共用快取。</p></fieldset>
         <fieldset><legend>連線與通知</legend><p class="muted">同一時間只發出一個查票請求；每個請求完成後在上下限之間隨機等待，才接下一個。多個監控同時到期時，快速模式優先，其次是逾期最久的。</p><div class="form-grid"><div><label for="request-gap-min">請求完成後等待下限（秒）</label><input id="request-gap-min" name="request_gap_min" type="number" min="5" required></div><div><label for="request-gap-max">請求完成後等待上限（秒）</label><input id="request-gap-max" name="request_gap_max" type="number" min="5" required></div><div><label for="timeout">連線逾時（秒）</label><input id="timeout" name="timeout" type="number" min="1" required></div><div><label for="notification-ttl">未送出通知保留時間（秒）</label><input id="notification-ttl" name="notification_ttl" type="number" min="1" required></div></div><label class="checkbox"><input id="system-alerts" name="system_alerts" type="checkbox">通知查詢異常與恢復狀態（各監控的通知頻道）</label></fieldset>
         <fieldset><legend>監控服務異常通知</legend>
           <p class="muted">監控意外中止會自動重試；連續失敗時逐步延長，最後每 5 分鐘重試。持續運作 60 秒後才通知恢復；不會解除平台封鎖或人工暫停。</p>
