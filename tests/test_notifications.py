@@ -4,6 +4,8 @@ import json
 import httpx
 from test_monitoring import check, releases
 
+from ticket_watcher.transport import MAX_RETRY_AFTER_SECONDS
+
 WEBHOOK = "https://discord.com/api/webhooks/123/test_token"
 
 
@@ -56,6 +58,17 @@ def test_discord_429_respects_body_and_header_without_new_ticket_request(harness
     asyncio.run(h["watcher"].notifier.deliver())
     assert len(h["requests"]) == 2
     assert h["source"].calls == 2
+
+
+def test_discord_429_body_wait_is_capped(harness, monkeypatch):
+    h = harness
+    enable(h, monkeypatch)
+    check(h, "SOLD_OUT")
+    h["responses"].append(httpx.Response(429, json={"retry_after": 1e14}))
+    check(h, "AVAILABLE")
+    blocked = h["watcher"].store.platform("discord")["blocked_until"]
+    assert blocked == h["clock"]() + MAX_RETRY_AFTER_SECONDS
+    assert releases(h["watcher"])[0]["notification_status"] == "EXPIRED"
 
 
 def test_pending_release_is_cancelled_after_confirmed_sold_out(harness, monkeypatch):

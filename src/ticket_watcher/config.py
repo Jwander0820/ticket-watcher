@@ -10,6 +10,15 @@ from zoneinfo import ZoneInfo
 
 import yaml
 
+DAY = 24 * 60 * 60
+# Upper bounds catch typos and keep every derived deadline representable.
+MAX_DURATION_SECONDS = 7 * DAY
+MAX_REQUEST_GAP_SECONDS = 600
+MAX_TIMEOUT_SECONDS = 300
+MAX_CHECKS = 1000
+MAX_METADATA_CACHE_SECONDS = 365 * DAY
+MAX_RETENTION_DAYS = 3650
+
 
 def validate_ticketplus_proxy(value: str) -> str:
     error = "TICKET_WATCHER_TICKETPLUS_PROXY 必須是有效的 http:// 或 https:// 代理端點"
@@ -166,9 +175,9 @@ def _section(data: dict, key: str, allowed: set[str]) -> dict:
     return value
 
 
-def _int(value, minimum=1) -> int:
-    if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
-        raise ValueError(f"數值必須是大於等於 {minimum} 的整數")
+def _int(value, minimum=1, maximum=MAX_DURATION_SECONDS) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or not minimum <= value <= maximum:
+        raise ValueError(f"數值必須是 {minimum} 到 {maximum} 之間的整數")
     return value
 
 
@@ -178,10 +187,10 @@ def _bool(value) -> bool:
     return value
 
 
-def _interval(value, minimum: int) -> tuple[int, int]:
+def _interval(value, minimum: int, maximum: int = MAX_DURATION_SECONDS) -> tuple[int, int]:
     if not isinstance(value, list) or len(value) != 2:
         raise ValueError("間隔必須使用 [最小秒數, 最大秒數]")
-    low, high = (_int(x, minimum) for x in value)
+    low, high = (_int(x, minimum, maximum) for x in value)
     if high < low:
         raise ValueError("最大間隔不可小於最小間隔")
     return low, high
@@ -231,8 +240,8 @@ def _quiet_windows(value) -> tuple[QuietWindow, ...]:
 def _request_gap(value) -> tuple[int, int]:
     # A single number is the older fixed-gap format.
     if isinstance(value, int) and not isinstance(value, bool):
-        return (_int(value, 5),) * 2
-    return _interval(value, 5)
+        return (_int(value, 5, MAX_REQUEST_GAP_SECONDS),) * 2
+    return _interval(value, 5, MAX_REQUEST_GAP_SECONDS)
 
 
 def _sequence(value) -> tuple[int, ...]:
@@ -415,14 +424,18 @@ def parse_config(data: dict, directory: Path) -> Config:
         normal_interval=_interval(polling.get("normal_interval_seconds", [300, 900]), 300),
         active_interval=_interval(polling.get("active_interval_seconds", [60, 180]), 60),
         active_window=_int(polling.get("active_window_seconds", 1800)),
-        exit_active_checks=_int(polling.get("exit_active_after_no_available_checks", 2)),
-        active_stable_checks=_int(polling.get("active_stable_checks", 5)),
+        exit_active_checks=_int(
+            polling.get("exit_active_after_no_available_checks", 2), 1, MAX_CHECKS
+        ),
+        active_stable_checks=_int(polling.get("active_stable_checks", 5), 1, MAX_CHECKS),
         active_stable_seconds=_int(polling.get("active_stable_seconds", 600)),
         active_cooldown=_int(polling.get("active_cooldown_seconds", 1800)),
         quiet_windows=_quiet_windows(polling.get("quiet_windows", [])),
         request_gap=_request_gap(http.get("min_request_gap_seconds", [5, 15])),
-        timeout=_int(http.get("timeout_seconds", 20)),
-        metadata_cache_seconds=_int(http.get("metadata_cache_seconds", 604800), 0),
+        timeout=_int(http.get("timeout_seconds", 20), 1, MAX_TIMEOUT_SECONDS),
+        metadata_cache_seconds=_int(
+            http.get("metadata_cache_seconds", 604800), 0, MAX_METADATA_CACHE_SECONDS
+        ),
         backoff=_sequence(http.get("backoff_seconds", [900, 1800, 3600])),
         webhook_url_env=env_name,
         system_alerts=_bool(notice.get("system_alerts_enabled", True)),
@@ -431,7 +444,7 @@ def parse_config(data: dict, directory: Path) -> Config:
         worker_alert_channel_ids=worker_channels if "worker_alert_channel_ids" in notice else (),
         notification_ttl=_int(notice.get("delivery_ttl_seconds", 600)),
         retry_delays=_sequence(notice.get("retry_delays_seconds", [10, 30, 60, 120, 300])),
-        retention_days=_int(app.get("retention_days", 30)),
+        retention_days=_int(app.get("retention_days", 30), 1, MAX_RETENTION_DAYS),
         targets=tuple(targets),
         channels=tuple(channels),
         ui_paused=_bool(app.get("ui_paused", False)),

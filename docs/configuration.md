@@ -49,19 +49,21 @@ CLI 常駐程序需重啟才會套用外部設定變更。UI 儲存會自動重�
 
 | YAML 欄位 | 預設 | 規則 |
 | --- | --- | --- |
-| `polling.normal_interval_seconds` | `[300, 900]` | 隨機一般間隔，下限至少 300 秒 |
-| `polling.active_interval_seconds` | `[60, 180]` | 隨機快速間隔，下限至少 60 秒 |
-| `polling.active_window_seconds` | `1800` | 每輪快速模式上限 30 分鐘，新訊號不延長 |
-| `polling.exit_active_after_no_available_checks` | `2` | 連續完整確認無票的退出次數 |
-| `polling.active_stable_checks` | `5` | 持續有票或票況相同的有效觀測次數；須同時滿足時間門檻 |
-| `polling.active_stable_seconds` | `600` | 持續有票或票況相同至少 10 分鐘後降速 |
-| `polling.active_cooldown_seconds` | `1800` | 降速後 30 分鐘內維持一般模式，仍正常查票與通知 |
+| `polling.normal_interval_seconds` | `[300, 900]` | 隨機一般間隔，300～604800 秒（7 天） |
+| `polling.active_interval_seconds` | `[60, 180]` | 隨機快速間隔，60～604800 秒 |
+| `polling.active_window_seconds` | `1800` | 每輪快速模式上限 30 分鐘，新訊號不延長；最多 604800 秒 |
+| `polling.exit_active_after_no_available_checks` | `2` | 連續完整確認無票的退出次數，1～1000 |
+| `polling.active_stable_checks` | `5` | 持續有票或票況相同的有效觀測次數，1～1000；須同時滿足時間門檻 |
+| `polling.active_stable_seconds` | `600` | 持續有票或票況相同至少 10 分鐘後降速；最多 604800 秒 |
+| `polling.active_cooldown_seconds` | `1800` | 降速後 30 分鐘內維持一般模式，仍正常查票與通知；最多 604800 秒 |
 | `polling.quiet_windows` | `[]` | 低頻時段，最多 12 個，見下方說明 |
 | `http.platform_concurrency` | `1` | 目前必須為 1 |
-| `http.min_request_gap_seconds` | `[5, 15]` | 每個 HTTP 請求完成後隨機等待的秒數，下限至少 5 秒；舊的單一數字視為固定間隔 |
-| `http.timeout_seconds` | `20` | 請求逾時秒數 |
-| `http.metadata_cache_seconds` | `604800`（7 天） | 基本資料快取保存時間；`0` 表示不自動到期。變更後依原始取得時間套用，也適用於既有快取。 |
-| `http.backoff_seconds` | `[900, 1800, 3600]` | 失敗退避，另有 0～30 秒隨機延遲；伺服器期限較長時優先遵守 |
+| `http.min_request_gap_seconds` | `[5, 15]` | 每個 HTTP 請求完成後隨機等待的秒數，5～600 秒；舊的單一數字視為固定間隔 |
+| `http.timeout_seconds` | `20` | 請求逾時秒數，1～300 |
+| `http.metadata_cache_seconds` | `604800`（7 天） | 基本資料快取保存時間，最多 31536000 秒（365 天）；`0` 表示不自動到期。變更後依原始取得時間套用，也適用於既有快取。 |
+| `http.backoff_seconds` | `[900, 1800, 3600]` | 失敗退避，每段最多 604800 秒，另有 0～30 秒隨機延遲；伺服器期限較長時優先遵守，但最多等待 1 天 |
+
+所有秒數設定都有上限，用來擋下多打幾個 0 之類的誤植；超出範圍時設定檔無法載入，控制台也會拒絕儲存。
 
 監控查到「暫無票券」就會進入快速模式，外頁場次與內頁票區／票種皆適用，首次觀測也會啟用。相同訊號與後續釋票都不延長本輪快速模式上限。已開始場次不觸發此模式，資料不完整時仍遵守錯誤退避。
 
@@ -92,7 +94,7 @@ polling:
 ```
 
 - 時間依 `app.timezone`（預設 Asia/Taipei）判斷，格式為 `HH:MM`；開始晚於結束代表跨越午夜，結束寫 `23:59` 或 `24:00` 代表到午夜為止。
-- 每段擇一指定 `interval_seconds`（下限至少 300 秒）或 `pause: true`；時段不可重疊，開始與結束不可相同。
+- 每段擇一指定 `interval_seconds`（300～604800 秒）或 `pause: true`；時段不可重疊，開始與結束不可相同。
 - 下次查詢最晚排在時段結束後 1～10 分鐘（隨機），避免跨出時段後仍沉睡太久或每天整點準時請求；一般間隔若會落入暫停時段，也順延到該時段結束。
 - 只影響一般模式。進入快速模式後仍依 `active_interval_seconds` 查詢，避免冷門時段開賣時漏掉。
 - 新增的監控、服務重啟後的逾期補查、手動「查詢一次」不受限制，查完才依時段排下一次。
@@ -138,13 +140,13 @@ stop_at: '2026-11-29T18:00:00+08:00'
 | `notifications.system_alerts_enabled` | `true`，查詢異常與恢復通知 |
 | `notifications.worker_alerts_enabled` | `true`，UI 監控工作中止／穩定恢復通知 |
 | `notifications.worker_alert_channel_ids` | `[default]`，UI 服務告警目的地陣列，可複選 |
-| `notifications.delivery_ttl_seconds` | `600`，通知有效期限 10 分鐘 |
-| `notifications.retry_delays_seconds` | `[10, 30, 60, 120, 300]`，失敗重試間隔 |
-| `app.retention_days` | `30`，事件歷史保留天數；保留未完成工作 |
+| `notifications.delivery_ttl_seconds` | `600`，通知有效期限 10 分鐘；最多 604800 秒 |
+| `notifications.retry_delays_seconds` | `[10, 30, 60, 120, 300]`，失敗重試間隔；每段最多 604800 秒 |
+| `app.retention_days` | `30`，事件歷史保留天數，1～3650；保留未完成工作 |
 
 `channels` 只存頻道的 `id` 與 `name`；Webhook 由 [控制台](ui.md#設定-discord-頻道) 存入資料庫旁的私有 JSON，不填進 YAML。未設定 Webhook 時，事件留在待送佇列，超過 TTL 就過期。
 
-各目的頻道獨立保存送達、訊息 ID、嘗試次數與取消狀態；已成功頻道不因其他頻道失敗而重送。Discord 429 仍遵守原有共用冷卻。服務告警的舊欄位 `worker_alert_channel_id` 仍可讀取，但不可與陣列欄位同時指定。
+各目的頻道獨立保存送達、訊息 ID、嘗試次數與取消狀態；已成功頻道不因其他頻道失敗而重送。Discord 429 仍遵守原有共用冷卻，單次最多等待 1 天。服務告警的舊欄位 `worker_alert_channel_id` 仍可讀取，但不可與陣列欄位同時指定。
 
 多頻道功能使用 SQLite 第 3 版資料表。監控程序啟動時會把第 1／2 版的單頻道通知轉為一筆對應頻道的送達紀錄，保留基準、狀態、重試次數、TTL 及訊息 ID。更新前先停止所有共用資料庫的程序並備份完整資料目錄；VPS 自動部署仍會拒絕資料表變更，需先依 [遷移步驟](vps-migration.md#多頻道通知資料庫升級) 手動完成。舊版程式無法直接讀取第 3 版資料庫。
 

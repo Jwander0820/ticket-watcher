@@ -10,7 +10,7 @@ import pytest
 from ticket_watcher.cli import main
 from ticket_watcher.config import load_config, parse_config, validate_url
 from ticket_watcher.models import SourceError
-from ticket_watcher.transport import PublicTransport, retry_after
+from ticket_watcher.transport import MAX_RETRY_AFTER_SECONDS, PublicTransport, retry_after
 
 
 @pytest.mark.parametrize("value", [None, "", "   "])
@@ -77,6 +77,17 @@ def test_example_config_is_valid_and_disabled_by_default():
         "http:\n  min_request_gap_seconds: 0",
         "app:\n  unknown_setting: true",
         "notifications:\n  delivery_ttl_seconds: false",
+        "polling:\n  normal_interval_seconds: [300, 604801]",
+        "polling:\n  active_window_seconds: 10000000000000",
+        "polling:\n  active_stable_checks: 1001",
+        "polling:\n  quiet_windows: [{start: '00:00', end: '07:00', interval_seconds: [300, 604801]}]",
+        "http:\n  min_request_gap_seconds: [5, 601]",
+        "http:\n  min_request_gap_seconds: 601",
+        "http:\n  timeout_seconds: 301",
+        "http:\n  metadata_cache_seconds: 31536001",
+        "http:\n  backoff_seconds: [900, 604801]",
+        "notifications:\n  delivery_ttl_seconds: 604801",
+        "app:\n  retention_days: 3651",
     ],
 )
 def test_invalid_config_fails_clearly(tmp_path, data):
@@ -84,6 +95,33 @@ def test_invalid_config_fails_clearly(tmp_path, data):
     path.write_text(data)
     with pytest.raises(ValueError):
         load_config(path)
+
+
+def test_largest_allowed_settings_are_accepted(tmp_path):
+    config = parse_config(
+        {
+            "polling": {
+                "normal_interval_seconds": [604800, 604800],
+                "active_interval_seconds": [604800, 604800],
+                "active_window_seconds": 604800,
+                "exit_active_after_no_available_checks": 1000,
+                "active_stable_checks": 1000,
+                "quiet_windows": [
+                    {"start": "00:00", "end": "07:00", "interval_seconds": [604800, 604800]}
+                ],
+            },
+            "http": {
+                "min_request_gap_seconds": [600, 600],
+                "timeout_seconds": 300,
+                "metadata_cache_seconds": 31536000,
+            },
+            "notifications": {"delivery_ttl_seconds": 604800},
+            "app": {"retention_days": 3650},
+        },
+        tmp_path,
+    )
+    assert config.normal_interval == (604800, 604800)
+    assert config.timeout == 300 and config.request_gap == (600, 600)
 
 
 def test_capabilities_does_not_create_database(tmp_path, monkeypatch, capsys):
@@ -112,6 +150,24 @@ def test_retry_after_supports_seconds_and_http_date():
     assert retry_after("-1", now) == 0
     assert retry_after("inf", now) == 0
     assert retry_after("nan", now) == 0
+
+
+def test_retry_after_caps_server_wait():
+    now = 1_800_000_000
+    assert retry_after("99999999999999", now) == MAX_RETRY_AFTER_SECONDS
+    assert retry_after("Fri, 31 Dec 9999 23:59:59 GMT", now) == MAX_RETRY_AFTER_SECONDS
+
+
+def test_long_rate_limit_keeps_status_readable(harness):
+    h = harness
+    wait = retry_after("99999999999999", h["clock"]())
+    h["source"].values.append(SourceError("RATE_LIMITED", "限制", wait))
+    result = asyncio.run(h["watcher"].check("test"))
+    assert result.execution_status == "FAILED"
+    platform = h["watcher"].store.platform()
+    assert platform["blocked_until"] == h["clock"]() + MAX_RETRY_AFTER_SECONDS
+    status = h["watcher"].status().data
+    assert status["platform"]["blocked_until"] and status["targets"][0]["next_allowed_at"]
 
 
 @pytest.mark.parametrize(

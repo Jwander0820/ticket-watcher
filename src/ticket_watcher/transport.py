@@ -16,6 +16,8 @@ from .models import SourceError, utcnow
 from .storage import Store
 
 log = logging.getLogger(__name__)
+# Longer server waits are shortened so derived deadlines stay representable.
+MAX_RETRY_AFTER_SECONDS = 24 * 60 * 60
 
 
 def retry_after(value: str | None, now: float) -> float:
@@ -23,15 +25,17 @@ def retry_after(value: str | None, now: float) -> float:
         return 0
     try:
         seconds = float(value)
-        return max(0, seconds) if math.isfinite(seconds) else 0
+        if not math.isfinite(seconds):
+            return 0
     except ValueError:
         try:
             date = parsedate_to_datetime(value)
             if date.tzinfo is None:
                 date = date.replace(tzinfo=UTC)
-            return max(0, (date - datetime.fromtimestamp(now, UTC)).total_seconds())
+            seconds = (date - datetime.fromtimestamp(now, UTC)).total_seconds()
         except (ValueError, TypeError, OverflowError):
             return 0
+    return min(max(0, seconds), MAX_RETRY_AFTER_SECONDS)
 
 
 class PublicTransport:

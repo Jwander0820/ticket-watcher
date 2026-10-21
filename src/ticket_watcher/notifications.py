@@ -14,7 +14,7 @@ from .notification_text import discord_length, plain, ticket_content
 from .private_io import read_webhooks
 from .schedule import stop_info, stopped_sessions
 from .storage import Store
-from .transport import retry_after
+from .transport import MAX_RETRY_AFTER_SECONDS, retry_after
 
 SUPPRESS_EMBEDS = 1 << 2
 
@@ -236,7 +236,7 @@ class DiscordNotifier:
                     try:
                         server_delay = float(json.loads(body).get("retry_after", 0))
                         if math.isfinite(server_delay):
-                            delay = max(delay, server_delay)
+                            delay = max(delay, min(server_delay, MAX_RETRY_AFTER_SECONDS))
                     except (ValueError, TypeError, AttributeError):
                         pass
                 elif 200 <= response.status_code < 300:
