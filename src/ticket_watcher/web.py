@@ -485,6 +485,18 @@ async def protect(request, handler):
         response = web.json_response(
             {"error": "請求未通過驗證或找不到此操作，請重新整理。"}, status=error.status
         )
+    except Exception as error:
+        # Messages and tracebacks may contain credential URLs; log only the type.
+        log.error(
+            "ui_request_failed method=%s path=%s type=%s",
+            request.method,
+            request.rel_url.raw_path,
+            type(error).__name__,
+        )
+        response = web.json_response(
+            {"error": "控制台發生未預期的錯誤，請稍後再試；持續發生時請查看服務日誌。"},
+            status=500,
+        )
     response.headers.update(
         {
             "Cache-Control": "no-store",

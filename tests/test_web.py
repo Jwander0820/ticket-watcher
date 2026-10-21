@@ -1,5 +1,6 @@
 import asyncio
 import json
+import sqlite3
 from contextlib import asynccontextmanager
 from dataclasses import replace
 
@@ -127,6 +128,46 @@ def test_ui_rejects_cross_site_and_missing_csrf(tmp_path):
                 )
             ).status == 415
             assert not requests and c.config.targets == ()
+
+    asyncio.run(scenario())
+
+
+def test_unexpected_errors_return_private_json_and_panel_keeps_working(
+    tmp_path, monkeypatch, caplog
+):
+    async def scenario():
+        async with panel(tmp_path) as (client, c, requests):
+            state = await snapshot(client)
+
+            async def expect_private_error(response):
+                body = await response.json()
+                assert response.status == 500 and "未預期" in body["error"]
+                assert response.headers["Cache-Control"] == "no-store"
+                assert response.headers["X-Content-Type-Options"] == "nosniff"
+                assert "frame-ancestors 'none'" in response.headers["Content-Security-Policy"]
+                assert "test_private_value" not in json.dumps(body)
+
+            async def broken_check(*args, **kwargs):
+                raise RuntimeError(HOOK)
+
+            def locked_state(view="all"):
+                raise sqlite3.OperationalError(f"database is locked {HOOK}")
+
+            monkeypatch.setattr(c.watcher, "_check", broken_check)
+            await expect_private_error(
+                await client.post(
+                    "/api/actions/check",
+                    headers={"X-CSRF-Token": state["csrf"]},
+                    json={"revision": state["revision"], "target_id": "test"},
+                )
+            )
+            await snapshot(client)
+            monkeypatch.setattr(c, "state", locked_state)
+            await expect_private_error(await client.get("/api/state"))
+            assert "path=/api/actions/check type=RuntimeError" in caplog.text
+            assert "path=/api/state type=OperationalError" in caplog.text
+            assert "test_private_value" not in caplog.text
+            assert not requests
 
     asyncio.run(scenario())
 

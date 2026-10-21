@@ -55,9 +55,15 @@ function toast(message) {
   toastTimer = setTimeout(() => { $("#toast").hidden = true; }, 5500);
 }
 async function api(path, {method="GET", body}={}) {
-  const response = await fetch(path, {method, headers: method === "GET" ? {} : {"Content-Type":"application/json", "X-CSRF-Token": state.csrf}, body: body === undefined ? undefined : JSON.stringify(body), cache:"no-store"});
-  const result = await response.json();
-  if (!response.ok) throw new Error(result.error || "操作失敗，請稍後再試。");
+  const options = {method, headers: method === "GET" ? {} : {"Content-Type":"application/json", "X-CSRF-Token": state.csrf}, body: body === undefined ? undefined : JSON.stringify(body), cache:"no-store"};
+  let response, result;
+  // No response at all: the service stopped, or an expired remote login redirect was blocked.
+  try { response = await fetch(path, options); }
+  catch { throw new Error("無法連線到服務，請確認服務仍在運作；遠端使用時請重新整理頁面以重新登入。"); }
+  // Proxy error pages and login pages are HTML, not the panel's JSON.
+  try { result = await response.json(); }
+  catch { throw new Error(response.ok ? "服務回應格式不正確，請重新整理頁面。" : `服務暫時無法處理請求（HTTP ${response.status}），請稍後再試或重新整理頁面。`); }
+  if (!response.ok) throw new Error(result?.error || "操作失敗，請稍後再試。");
   return result;
 }
 function badge(status, label) {
