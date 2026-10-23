@@ -8,7 +8,7 @@ version = "0.1.1"
 description = "Reusable TicketPlus availability queries and release monitoring"
 readme = "README.md"
 requires-python = ">=3.12"
-dependencies = ["httpx>=0.28,<0.29", "PyYAML>=6.0,<7", "cryptography>=44,<49", "aiohttp>=3.12,<4", "tzdata>=2025.1; sys_platform == 'win32'"]
+dependencies = ["httpx>=0.28,<0.29", "certifi>=2026.10.19", "PyYAML>=6.0,<7", "cryptography>=50.0.2,<51", "aiohttp>=3.12,<4", "tzdata>=2025.1; sys_platform == 'win32'"]
 
 [project.optional-dependencies]
 dev = ["pytest>=8,<10", "ruff>=0.14,<0.17", "build>=1,<2"]

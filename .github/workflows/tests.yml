@@ -13,7 +13,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
-      - run: python -m pip install '.[dev]'
+      - run: python scripts/bootstrap_pip.py
+      - run: python -m pip install --no-cache-dir '.[dev]'
       - run: ruff check .
       - run: ruff format --check .
       - run: pytest -q
@@ -40,10 +41,13 @@ jobs:
           bash -n scripts/install-vps-warp.sh
       - name: Build and smoke test Linux amd64 image
         run: |
-          docker build --platform linux/amd64 \
+          docker build --pull --no-cache --platform linux/amd64 \
             --label "org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY" \
             --label "org.opencontainers.image.revision=$GITHUB_SHA" -t "$IMAGE" .
           docker run --rm --network none "$IMAGE" capabilities --json
+          docker run --rm --network none --read-only --cap-drop ALL \
+            --security-opt no-new-privileges:true --memory 256m --cpus 0.5 \
+            --pids-limit 64 --entrypoint python "$IMAGE" scripts/verify_ca.py
       - name: Verify deployment migration in the built image
         uses: actions/setup-python@v5
         with:
@@ -52,7 +56,8 @@ jobs:
         env:
           TICKET_WATCHER_DEPLOY_TEST_IMAGE: ${{ env.IMAGE }}
         run: |
-          python -m pip install '.[dev]'
+          python scripts/bootstrap_pip.py
+          python -m pip install --no-cache-dir '.[dev]'
           pytest -q tests/test_deploy_container.py
       - name: Publish tested image
         id: publish

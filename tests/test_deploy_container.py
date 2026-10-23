@@ -6,6 +6,47 @@ from pathlib import Path
 
 import pytest
 
+
+def test_built_image_ca_and_ticketplus_conversion():
+    image = os.environ.get("TICKET_WATCHER_DEPLOY_TEST_IMAGE")
+    if not image:
+        pytest.skip("Set TICKET_WATCHER_DEPLOY_TEST_IMAGE to the tested Linux image")
+    result = subprocess.run(
+        [
+            "docker",
+            "run",
+            "--rm",
+            "--network",
+            "none",
+            "--read-only",
+            "--cap-drop",
+            "ALL",
+            "--security-opt",
+            "no-new-privileges:true",
+            "--memory",
+            "256m",
+            "--cpus",
+            "0.5",
+            "--pids-limit",
+            "64",
+            "--entrypoint",
+            "python",
+            image,
+            "-c",
+            "import runpy; runpy.run_path('scripts/verify_ca.py',run_name='__main__'); "
+            "from ticket_watcher.platforms.ticketplus import internal_id,public_id; "
+            "assert internal_id('190c8cf3965a985d9151d912313e2fe1','e') == 'e000001189'; "
+            "assert internal_id('1d68ecb8d8d6df5f82f416f3c9bb63c1','s') == 's000001778'; "
+            "assert public_id('e000001189') == '190c8cf3965a985d9151d912313e2fe1'",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert '"system_directory"' in result.stdout
+
+
 SMOKE = r"""
 import os, runpy, sqlite3, tempfile
 from pathlib import Path

@@ -34,6 +34,7 @@
 | [TicketPlus 資料來源](ticketplus-source.md) | 2026-10-05 公開端點驗證、欄位與票況對照 |
 | [TicketPlus 案例實測](ticketplus-cases.md) | 2026-10-05 活動／票區／票種快照及重查範例 |
 | [第一版驗證紀錄](verification.md) | v0.1.0 的測試、容器與公開查詢證據 |
+| [2026-10 安全更新](security-2026-10-ca-research.md) | eMudhra／emSign CA 移除、pip 引導與 cryptography 獨立評估 |
 
 歷史票況、測試數與部署紀錄只代表標示日期的結果。使用能力以目前程式的 `capabilities` 為準，重跑驗證的方法見 [開發指南](development.md)。
 

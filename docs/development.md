@@ -10,6 +10,7 @@ Windows PowerShell：
 
 ```powershell
 python -m venv .venv
+.\.venv\Scripts\python.exe scripts/bootstrap_pip.py
 .\.venv\Scripts\python.exe -m pip install -e ".[dev]"
 .\.venv\Scripts\python.exe -m pytest -q --basetemp .pytest-tmp-local
 .\.venv\Scripts\ruff.exe check .
@@ -21,6 +22,7 @@ Linux：
 
 ```sh
 python -m venv .venv
+.venv/bin/python scripts/bootstrap_pip.py
 .venv/bin/python -m pip install -e '.[dev]'
 .venv/bin/python -m pytest -q --basetemp .pytest-tmp-local
 .venv/bin/ruff check .
@@ -29,6 +31,17 @@ python -m venv .venv
 ```
 
 pytest 會重建指定的 `--basetemp`，請只使用專用暫存目錄。測試使用固定樣本及模擬 HTTP，涵蓋票況比較、租約、通知重試、排程、停止期限、UI 與恢復流程；不輪詢真實票網，也不傳送真實 Discord 訊息。
+
+2026-10 CA 事件的官方來源、引導 wheel SHA256 與獨立的 cryptography 評估見 [安全更新紀錄](security-2026-10-ca-research.md)。`bootstrap_pip.py` 先驗證官方 wheel 雜湊，再直接由該 wheel 執行 pip，避免啟動舊 pip 下載依賴。雜湊不符會中止安裝。
+
+本機映像驗證（不啟動監控、不掛載正式資料）：
+
+```sh
+docker build --pull --no-cache -t ticket-watcher:ca-security-local .
+docker run --rm --network none --read-only --cap-drop ALL --security-opt no-new-privileges:true --memory 256m --cpus 0.5 --pids-limit 64 --entrypoint python ticket-watcher:ca-security-local scripts/verify_ca.py
+```
+
+建置會更新系統 CA，解析系統 bundle／目錄、應用 certifi 與 pip 內嵌 certifi 的實際憑證，遇到 `emSign ECC Root CA - G3` 即失敗。單獨 `--no-cache` 不會更新 base image，因此必須搭配 `--pull`。CI 在發布前以同一映像重做離線檢查；主分支 push 仍可能觸發既有 VPS 部署，需另行授權。
 
 [CI](../.github/workflows/tests.yml) 在 Python 3.12、3.13、3.14 執行 Ruff 與 pytest。套件建置產物位於 `dist/`。Windows 受限環境若阻擋暫存目錄或 asyncio 初始化，先辨識環境限制，不要為通過測試修改產品行為。
 
