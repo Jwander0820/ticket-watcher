@@ -26,6 +26,11 @@ def _window_exit(window, local: datetime, rng) -> float:
     return end.timestamp() + rng.randint(*QUIET_EXIT_JITTER_SECONDS)
 
 
+def in_paused_window(config, now: float) -> bool:
+    window, _ = _quiet_window(config, now)
+    return window is not None and window.interval is None
+
+
 def normal_next_check(config, now: float, rng) -> float:
     # Quiet windows replace only the NORMAL interval; ACTIVE mode stays fast.
     window, local = _quiet_window(config, now)

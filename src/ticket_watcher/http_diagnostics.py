@@ -36,6 +36,7 @@ ENUM_FIELDS = {
         "missing",
     },
     "cf_mitigated": {"challenge"},
+    "aws_waf_action": {"captcha", "challenge"},
     "body_read": {
         "not_read",
         "complete",
@@ -71,7 +72,7 @@ def safe_http_diagnostic(value) -> dict:
     for key, choices in ENUM_FIELDS.items():
         if isinstance(value.get(key), str) and value[key] in choices:
             safe[key] = value[key]
-    if type(value.get("status")) is int and value["status"] in (401, 403):
+    if type(value.get("status")) is int and value["status"] in (200, 202, 401, 403, 405):
         safe["status"] = value["status"]
     for key, low, high in (
         ("request_number", 1, 1_000_000),
@@ -158,6 +159,8 @@ def response_diagnostic(response, params, *, proxy_configured, request_number, r
         diagnostic[key] = value if value in ENUM_FIELDS[key] else "other"
     if headers.get("cf-mitigated", "").lower() == "challenge":
         diagnostic["cf_mitigated"] = "challenge"
+    if headers.get("x-amzn-waf-action", "").lower() in {"captcha", "challenge"}:
+        diagnostic["aws_waf_action"] = headers["x-amzn-waf-action"].lower()
     if "retry-after" in headers:
         diagnostic["retry_after_seconds"] = retry_after
     return safe_http_diagnostic(diagnostic)

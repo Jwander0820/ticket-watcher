@@ -3,6 +3,7 @@ import sqlite3
 from contextlib import contextmanager
 from pathlib import Path
 
+from . import blocked_recovery
 from .config import Config, Target
 from .schedule import stop_info
 
@@ -217,10 +218,32 @@ class Store:
             self.connection.execute("SELECT * FROM platform WHERE id=?", (ident,)).fetchone()
         )
 
-    def acquire(self, owner: str, now: float, lease_seconds: float) -> dict | None:
+    def acquire(
+        self, owner: str, now: float, lease_seconds: float, *, recovery_target=None
+    ) -> dict | None:
         with self.transaction() as db:
             state = dict(db.execute("SELECT * FROM platform WHERE id='ticketplus'").fetchone())
-            if state["paused_reason"] or state["blocked_until"] > now or state["lease_until"] > now:
+            if state["blocked_until"] > now or state["lease_until"] > now:
+                return state
+            if recovery_target is not None:
+                recovery = blocked_recovery.read(db)
+                if (
+                    state["paused_reason"] != "BLOCKED"
+                    or not recovery
+                    or recovery["status"] != "WAITING"
+                    or recovery.get("invalidated")
+                    or recovery["retry_at"] > now
+                    or state["next_request"] > now
+                    or recovery["target_id"] != recovery_target.id
+                    or recovery["signature"] != recovery_target.signature
+                ):
+                    return state
+                # Consume the attempt BEFORE any network I/O. A crash must not
+                # replay a request whose outcome we can no longer establish.
+                blocked_recovery.write(
+                    db, {**recovery, "status": "PROBING", "owner": owner, "attempted_at": now}
+                )
+            elif state["paused_reason"]:
                 return state
             db.execute(
                 "UPDATE platform SET lease_owner=?,lease_until=? WHERE id='ticketplus'",
@@ -240,13 +263,33 @@ class Store:
         if state["lease_owner"] != owner or state["lease_until"] <= now:
             raise LeaseLost
 
+    def require_recovery(self, owner: str, now: float):
+        self.require_lease(owner, now)
+        recovery = blocked_recovery.read(self.connection)
+        if (
+            not recovery
+            or recovery["status"] != "PROBING"
+            or recovery.get("invalidated")
+            or recovery.get("owner") != owner
+            or self.platform()["paused_reason"] != "BLOCKED"
+        ):
+            raise LeaseLost
+
     def reserve_request(self, owner: str, now: float, gap: float, lease_seconds: float) -> float:
         with self.transaction() as db:
             state = db.execute("SELECT * FROM platform WHERE id='ticketplus'").fetchone()
             if state["lease_owner"] != owner or state["lease_until"] <= now:
                 raise LeaseLost
             if state["paused_reason"]:
-                raise PlatformRestricted("PLATFORM_PAUSED")
+                recovery = blocked_recovery.read(db)
+                if not (
+                    state["paused_reason"] == "BLOCKED"
+                    and recovery
+                    and recovery["status"] == "PROBING"
+                    and not recovery.get("invalidated")
+                    and recovery.get("owner") == owner
+                ):
+                    raise PlatformRestricted("PLATFORM_PAUSED")
             if state["blocked_until"] > now:
                 raise PlatformRestricted("PLATFORM_BUSY_OR_BACKOFF", state["blocked_until"])
             if state["next_request"] > now:

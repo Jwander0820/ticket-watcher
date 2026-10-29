@@ -45,6 +45,8 @@ Change timestamps `previous_observed_at` and `observed_at` are UTC Unix seconds 
 
 Errors: NETWORK, RATE_LIMITED, BLOCKED, PARSE, UNSUPPORTED. Requests share a minimum 5-second gap and persistent leases. 429 waits use the later of Retry-After and local backoff. Repeated schema problems pause the target; access refusal pauses the platform. Resume is a manual action and preserves cooldowns.
 
+An unexplained HTTP 403 during a monitored check can schedule one recovery check after a persisted random 12–24 hour delay. The platform stays paused until that check returns complete ticket data. Challenges, 401, incomplete diagnostics, legacy pauses, standalone queries and metadata refreshes require manual recovery. Any failed/interrupted recovery attempt remains paused without another automatic attempt. `status.platform.recovery` and `health.platform_recovery` expose WAITING/PROBING/FAILED and timestamps; query logs use mode `recovery`. Manual platform resume cancels a pending plan and preserves cooldowns; while a probe is active it returns DEFERRED / RECOVERY_IN_PROGRESS.
+
 A complete successful query resets the shared platform failure count without clearing cooldowns or writing monitoring baselines. Cached status summaries cover all items, while detail pages are read with SQL pagination. Historical retention cleanup runs at most once per hour across callers sharing the database; delivery expiry checks remain independent of this cleanup interval.
 
 ## Delivery guarantees

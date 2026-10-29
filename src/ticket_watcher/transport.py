@@ -9,6 +9,7 @@ from email.utils import parsedate_to_datetime
 
 import httpx
 
+from . import blocked_recovery
 from .config import Config
 from .http_body import ACCEPT_ENCODING, PUBLIC_BODY_LIMIT, ResponseBodyError, read_body
 from .http_diagnostics import read_blocked_diagnostic, response_diagnostic
@@ -88,7 +89,12 @@ class PublicTransport:
                 async with self.client.stream(
                     "GET", url, params=params, headers={"Accept-Encoding": ACCEPT_ENCODING}
                 ) as response:
-                    if response.status_code in (401, 403):
+                    if (
+                        response.status_code in (401, 403)
+                        or response.headers.get("cf-mitigated", "").lower() == "challenge"
+                        or response.headers.get("x-amzn-waf-action", "").lower()
+                        in {"captcha", "challenge"}
+                    ):
                         blocked_error = SourceError(
                             "BLOCKED",
                             f"網站拒絕存取（HTTP {response.status_code}），需人工處理",
@@ -123,6 +129,9 @@ class PublicTransport:
                 # rejection already seen on the wire, then honor cancellation.
                 with self.store.transaction() as db:
                     db.execute("UPDATE platform SET paused_reason='BLOCKED' WHERE id='ticketplus'")
+                    recovery = blocked_recovery.read(db)
+                    if recovery and recovery["status"] in {"WAITING", "PROBING"}:
+                        blocked_recovery.write(db, {**recovery, "invalidated": True})
                 blocked_error.http_diagnostic["body_read"] = "cancelled"
                 log.warning(
                     "source_http_diagnostic cancelled=true data=%s",

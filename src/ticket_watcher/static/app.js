@@ -30,7 +30,7 @@ function renderChanged(name, value, draw) {
   draw(); renderedViews.set(name, signature);
 }
 const reasonLabels = {NOT_DUE:"尚未到例行查詢時間", TARGET_BACKOFF:"前次查詢異常，等待退避期限", TARGET_DISABLED_OR_STOPPED:"監控已停用或到期", TARGET_PAUSED:"目標已暫停，需人工解除", PLATFORM_PAUSED:"平台已暫停，需人工處理", PLATFORM_BUSY_OR_BACKOFF:"平台正在查詢或等待限流期限", NETWORK:"網路異常", RATE_LIMITED:"平台限制頻率", BLOCKED:"平台拒絕存取", PARSE:"資料解析異常", UNSUPPORTED:"不支援的資料來源", INTERNAL_ERROR:"程序異常", CANCELLED:"服務重新載入或停止"};
-Object.assign(reasonLabels, {SHOW_STARTED:"選定場次均已開始，已自動停止", QUERY_SUPERSEDED:"查詢已過期或被接手，舊結果未寫入"});
+Object.assign(reasonLabels, {SHOW_STARTED:"選定場次均已開始，已自動停止", QUERY_SUPERSEDED:"查詢已過期或被接手，舊結果未寫入", RECOVERY_IN_PROGRESS:"自動恢復試查正在進行，請等待結果"});
 const effectiveStop = (target) => target.state?.effective_stop_at || target.stop_at;
 const isStopped = (target) => effectiveStop(target) && new Date(effectiveStop(target)) <= new Date();
 const dateText = (value) => value ? new Date(value).toLocaleString("zh-TW", {month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit",hour12:false}) : "尚無紀錄";
@@ -154,7 +154,7 @@ function renderQueryLogs() {
   $("#query-log-list").innerHTML = logs.entries.length ? logs.entries.map((entry) => {
     const name = state.targets.find((t) => t.id === entry.target_id)?.name || (entry.target_id ? "已移除的監控" : "單次公開查詢");
     const label = entry.status === "COMPLETED" ? entry.mode === "metadata" ? "更新成功" : entry.complete ? "查詢成功" : "票況不完整" : {DEFERRED:"等待中",INTERRUPTED:"已中斷",FAILED:"查詢失敗",UNSUPPORTED:"不支援"}[entry.status] || entry.status;
-    const mode = {scheduled:"自動監控",manual:"手動查詢",check:"排程檢查",query:"單次查詢",metadata:"更新基本資料"}[entry.mode] || entry.mode;
+    const mode = {scheduled:"自動監控",recovery:"自動恢復試查",manual:"手動查詢",check:"排程檢查",query:"單次查詢",metadata:"更新基本資料"}[entry.mode] || entry.mode;
     const summary = Object.entries(entry.summary).map(([status,count]) => `${ticketLabels[status] || status} ${count}`).join("・");
     const details = [summary,reasonLabels[entry.reason] || entry.reason,entry.release ? "偵測到可購票" : "",entry.hint ? "發現釋票線索" : ""].filter(Boolean).join("・");
     const time = new Date(entry.time).toLocaleString("zh-TW",{hour12:false});
@@ -206,7 +206,11 @@ function render() {
   const warning = state.runner_error || (state.external_changes ? "設定檔已在外部變更，請重啟 UI 以載入。" : "");
   $("#global-error").textContent = warning; $("#global-error").hidden = !warning;
   $("#platform-warning").hidden = !state.health.platform_paused;
-  $("#platform-warning").innerHTML = state.health.platform_paused ? `TicketPlus 平台已暫停查詢。確認存取問題處理完成後，再解除暫停。<button class="secondary" data-action="resume-platform">解除平台暫停</button>` : "";
+  const recovery = state.health.platform_recovery;
+  const recoveryText = recovery?.status === "WAITING" ? `預定 ${dateText(recovery.retry_at)} 自動試查一次，完整成功後才恢復監控。${state.ui_paused ? "服務暫停期間不會試查。" : ""}` : recovery?.status === "PROBING" ? "正在進行唯一一次恢復試查，其他查詢保持暫停。" : recovery?.status === "FAILED" ? "自動恢復已停止，不會再次試查。請人工確認後解除暫停。" : "確認存取問題處理完成後，再解除暫停。";
+  const platformWarning = state.health.platform_paused ? `TicketPlus 平台已暫停查詢。${recoveryText}<button class="secondary" data-action="resume-platform">解除平台暫停</button>` : "";
+  // Preserve focus and avoid repeating the same live-region announcement on refresh.
+  renderChanged("platform-warning", platformWarning, () => { $("#platform-warning").innerHTML = platformWarning; });
   if (view === "targets") {
     const targets = state.targets.map((target) => { const {age_seconds, ...stable} = target.state; return {...target, state:stable}; });
     renderChanged(view, [targets, state.channels, state.health.pending_notifications, state.targets.map(isStopped), state.ui_paused], renderTargets);
@@ -225,7 +229,7 @@ function render() {
   else if (view === "events" && state.events) renderChanged(view, [state.events, state.targets], renderEvents);
   else if (view === "logs" && state.query_logs) renderChanged(view, [state.query_logs, state.targets], renderQueryLogs);
   else if (view === "settings" && !settingsDirty) renderChanged(view, [state.settings, state.channels, state.revision], fillSettings);
-  document.querySelectorAll('[data-action="resume"], [data-action="resume-platform"]').forEach((button) => { button.disabled = state.ui_paused; });
+  document.querySelectorAll('[data-action="resume"], [data-action="resume-platform"]').forEach((button) => { button.disabled = state.ui_paused || (button.dataset.action === "resume-platform" && recovery?.status === "PROBING"); });
   $("#last-refresh").textContent = `上次更新 ${new Date().toLocaleTimeString("zh-TW",{hour12:false})} · 每 30 秒更新狀態`;
 }
 async function refresh() {

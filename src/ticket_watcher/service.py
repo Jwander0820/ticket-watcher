@@ -9,7 +9,7 @@ from contextlib import asynccontextmanager
 
 import httpx
 
-from . import __version__
+from . import __version__, blocked_recovery
 from .config import Config, Target
 from .health import health_snapshot
 from .http_diagnostics import safe_http_diagnostic
@@ -19,7 +19,7 @@ from .notifications import DiscordNotifier
 from .platforms.ticketplus import TicketPlusAdapter
 from .polling_policy import evaluate_policy
 from .query_log import QueryLog
-from .schedule import normal_next_check, stop_info, stopped_sessions
+from .schedule import in_paused_window, normal_next_check, stop_info, stopped_sessions
 from .storage import LeaseLost, PlatformRestricted, Store
 from .transport import PublicTransport
 
@@ -300,14 +300,42 @@ class Watcher:
                         db.execute(
                             "UPDATE platform SET paused_reason='BLOCKED' WHERE id='ticketplus'"
                         )
+                        self._fail_blocked_recovery(db, "LATE_REJECTION")
                     return self._deferred("QUERY_SUPERSEDED")
             platform = self.store.platform()
+            recovery = blocked_recovery.read(db)
+            probing = bool(recovery and recovery["status"] == "PROBING")
+            if probing:
+                self._fail_blocked_recovery(db, error.code)
+            elif error.code == "BLOCKED" and platform["paused_reason"]:
+                # Another rejection (including a challenge) must invalidate a
+                # previously planned recovery, never restart its countdown.
+                self._fail_blocked_recovery(db, "LATE_REJECTION")
             if error.code == "BLOCKED" and not platform["paused_reason"]:
                 db.execute("UPDATE platform SET paused_reason='BLOCKED' WHERE id='ticketplus'")
+                retry_at = None
+                if target and blocked_recovery.eligible(diagnostic):
+                    retry_at = now + max(
+                        self.rng.randint(*blocked_recovery.WAIT_SECONDS),
+                        diagnostic.get("retry_after_seconds", 0),
+                    )
+                    blocked_recovery.write(
+                        db,
+                        {
+                            "status": "WAITING",
+                            "target_id": target.id,
+                            "signature": target.signature,
+                            "route_key": blocked_recovery.route_key(self.config),
+                            "retry_at": retry_at,
+                        },
+                    )
                 if target:
                     self._system(
                         db,
-                        "TicketPlus 拒絕存取或要求驗證，需人工處理。",
+                        "TicketPlus 回傳原因未明的 HTTP 403，已暫停。"
+                        "將於 12～24 小時冷卻期結束後試查一次，完整成功才恢復監控。"
+                        if retry_at is not None
+                        else "TicketPlus 拒絕存取或要求驗證，需人工處理。",
                         target.id,
                         title="⛔ 查詢已暫停",
                     )
@@ -360,8 +388,9 @@ class Watcher:
                         json.dumps({"code": error.code, "message": str(error)}),
                     ),
                 )
-                if (failures == 1 and error.code != "BLOCKED") or (
-                    pause and not old["paused_reason"]
+                if not probing and (
+                    (failures == 1 and error.code != "BLOCKED")
+                    or (pause and not old["paused_reason"])
                 ):
                     reason = {
                         "NETWORK": "網路連線失敗",
@@ -382,6 +411,18 @@ class Watcher:
             target.id if target else "query",
             self.transport.count,
         )
+        platform = self.store.platform()
+        recovery = blocked_recovery.read(self.store.connection)
+        next_allowed = max(
+            platform["blocked_until"],
+            self.store.target(target.id)["next_check"] if target else 0,
+        )
+        if platform["paused_reason"]:
+            next_allowed = (
+                max(next_allowed, recovery["retry_at"], platform["next_request"])
+                if recovery and recovery["status"] == "WAITING"
+                else None
+            )
         return Result(
             status,
             "LIVE",
@@ -393,12 +434,7 @@ class Watcher:
                 },
                 "evaluation": {"performed": False, "release_detected": None},
                 "request_count": self.transport.count,
-                "next_allowed_at": timestamp(
-                    max(
-                        self.store.platform()["blocked_until"],
-                        self.store.target(target.id)["next_check"] if target else 0,
-                    )
-                ),
+                "next_allowed_at": timestamp(next_allowed),
             },
         )
 
@@ -439,13 +475,21 @@ class Watcher:
         )
 
     def _apply(
-        self, target: Target, observation: Observation, *, owner=None
+        self, target: Target, observation: Observation, *, owner=None, recovery=False
     ) -> tuple[list[dict], list[str], list[str]]:
         now = observation.observed_at
         changes, releases, hints, unavailable, no_hints = [], [], [], set(), set()
         with self.store.transaction() as db:
             if owner is not None:
                 self.store.require_lease(owner, self.clock())
+            if recovery:
+                self.store.require_recovery(owner, self.clock())
+                if (
+                    not observation.complete
+                    or not observation.items
+                    or any(item.status == TicketStatus.UNKNOWN for item in observation.items)
+                ):
+                    raise SourceError("PARSE", "恢復試查未取得完整票況")
             old = self.store.target(target.id)
             if old["source"] and old["source"] != observation.source:
                 db.execute("DELETE FROM items WHERE target_id=?", (target.id,))
@@ -545,6 +589,8 @@ class Watcher:
                     and observation.incomplete_session_ids <= stopped
                 )
             )
+            if recovery and not complete:
+                raise SourceError("PARSE", "恢復試查缺少先前監控的票況")
             self.store.cancel_unavailable(db, target.id, unavailable)
             self.store.cancel_unavailable(db, target.id, no_hints, kind="RELEASE_HINT")
             # Fast polling follows the current signal, even without a prior
@@ -650,7 +696,14 @@ class Watcher:
             if complete:
                 db.execute("UPDATE platform SET failures=0 WHERE id='ticketplus'")
             if complete and old["last_error"]:
-                self._system(db, "已恢復取得完整票況。", target.id, title="✅ 查詢恢復")
+                self._system(
+                    db,
+                    "自動試查已取得完整票況，平台已恢復監控。"
+                    if recovery
+                    else "已恢復取得完整票況。",
+                    target.id,
+                    title="✅ 查詢恢復",
+                )
             if not complete and (old["parse_failures"] == 0 or pause):
                 self._system(
                     db,
@@ -721,6 +774,12 @@ class Watcher:
                     if has_hint:
                         hint_event_ids.append(event_id)
                     order += 1
+            if recovery:
+                # Commit the successful observation and release the platform in
+                # the same transaction. Other monitors stay blocked until here.
+                db.execute("UPDATE platform SET paused_reason=NULL WHERE id='ticketplus'")
+                blocked_recovery.write(db, None)
+                self._spread_overdue_checks(db)
         return changes, event_ids, hint_event_ids
 
     async def check(
@@ -747,13 +806,26 @@ class Watcher:
         return result
 
     async def _check(
-        self, ident: str, *, detail=False, limit=50, offset=0, immediate=False, mode="scheduled"
+        self,
+        ident: str,
+        *,
+        detail=False,
+        limit=50,
+        offset=0,
+        immediate=False,
+        mode="scheduled",
+        recovery=False,
     ) -> Result:
         self._target(ident)
         started = time.monotonic()
         try:
             result = await self._perform_check(
-                ident, detail=detail, limit=limit, offset=offset, immediate=immediate
+                ident,
+                detail=detail,
+                limit=limit,
+                offset=offset,
+                immediate=immediate,
+                recovery=recovery,
             )
         except BaseException as error:
             result = Result(
@@ -774,7 +846,7 @@ class Watcher:
         return result
 
     async def _perform_check(
-        self, ident: str, *, detail=False, limit=50, offset=0, immediate=False
+        self, ident: str, *, detail=False, limit=50, offset=0, immediate=False, recovery=False
     ) -> Result:
         target = self._target(ident)
         if not target.enabled or (target.stop_at is not None and target.stop_at <= self.clock()):
@@ -782,7 +854,12 @@ class Watcher:
         if self._stop_info(target)["stop_reason"]:
             return self._deferred("SHOW_STARTED")
         owner = str(uuid.uuid4())
-        state = self.store.acquire(owner, self.clock(), self.transport.lease_seconds)
+        state = self.store.acquire(
+            owner,
+            self.clock(),
+            self.transport.lease_seconds,
+            recovery_target=target if recovery else None,
+        )
         if state:
             return self._deferred(
                 "PLATFORM_PAUSED" if state["paused_reason"] else "PLATFORM_BUSY_OR_BACKOFF",
@@ -806,7 +883,12 @@ class Watcher:
             except SourceError as error:
                 result = self._error(error, target, owner=owner)
             else:
-                changes, event_ids, hint_event_ids = self._apply(target, observation, owner=owner)
+                try:
+                    changes, event_ids, hint_event_ids = self._apply(
+                        target, observation, owner=owner, recovery=recovery
+                    )
+                except SourceError as error:
+                    return self._error(error, target, owner=owner)
                 result = Result(
                     result_source="LIVE",
                     data={
@@ -843,6 +925,11 @@ class Watcher:
         except PlatformRestricted as restriction:
             return self._deferred(restriction.reason, restriction.next_allowed_at)
         finally:
+            if recovery:
+                with self.store.transaction() as db:
+                    state = blocked_recovery.read(db)
+                    if state and state.get("owner") == owner:
+                        self._fail_blocked_recovery(db, "INTERRUPTED")
             self.store.release(owner)
             self.wake()
         return result
@@ -903,6 +990,7 @@ class Watcher:
                     "paused_reason": platform["paused_reason"],
                     "blocked_until": timestamp(platform["blocked_until"]),
                     "request_count": platform["request_count"],
+                    "recovery": blocked_recovery.summary(self.store.connection),
                 },
                 "evaluation": {"performed": False, "release_detected": None},
             },
@@ -941,9 +1029,79 @@ class Watcher:
             }
         )
 
+    def _fail_blocked_recovery(self, db, reason):
+        state = blocked_recovery.read(db)
+        if not state or state["status"] not in {"WAITING", "PROBING"}:
+            return
+        blocked_recovery.write(
+            db, {**state, "status": "FAILED", "reason": reason, "finished_at": self.clock()}
+        )
+        ident = next((t.id for t in self.config.targets if t.id == state["target_id"]), None)
+        self._system(
+            db,
+            "自動恢復未成功，平台維持暫停，不再自動試查；請人工確認後解除暫停。",
+            ident,
+            title="⛔ 自動恢復已停止",
+        )
+
+    def _blocked_recovery_target(self):
+        """Validate the pending attempt without clearing the platform pause."""
+        now = self.clock()
+        with self.store.transaction() as db:
+            recovery = blocked_recovery.read(db)
+            if not recovery or recovery["status"] == "FAILED":
+                return None
+            if recovery.get("invalidated"):
+                self._fail_blocked_recovery(db, "LATE_REJECTION")
+                return None
+            platform = self.store.platform()
+            if recovery["status"] == "PROBING":
+                if platform["lease_until"] <= now or platform["lease_owner"] != recovery.get(
+                    "owner"
+                ):
+                    self._fail_blocked_recovery(db, "INTERRUPTED")
+                return None
+            target = next((t for t in self.config.targets if t.id == recovery["target_id"]), None)
+            state = self.store.target(target.id) if target else None
+            if (
+                not target
+                or not target.enabled
+                or target.signature != recovery["signature"]
+                or blocked_recovery.route_key(self.config) != recovery["route_key"]
+                or not state
+                or state["signature"] != recovery["signature"]
+                or state["paused_reason"]
+                or self._stop_info(target)["stop_reason"]
+            ):
+                self._fail_blocked_recovery(db, "TARGET_OR_ROUTE_CHANGED")
+                return None
+            due = max(
+                recovery["retry_at"],
+                platform["blocked_until"],
+                platform["lease_until"],
+                platform["next_request"],
+                state["next_check"],
+            )
+            if due > now:
+                return None
+            if in_paused_window(self.config, now):
+                blocked_recovery.write(
+                    db, {**recovery, "retry_at": normal_next_check(self.config, now, self.rng)}
+                )
+                return None
+            return target.id
+
     async def _check_due(self, wakeup: asyncio.Event) -> list[Result]:
         results = []
         self.store.cancel_obsolete_notices(self.config, self.clock())
+        if self.config.ui_paused:
+            return results
+        if self.store.platform()["paused_reason"]:
+            ident = self._blocked_recovery_target()
+            if ident is not None:
+                results.append(await self._check(ident, mode="recovery", recovery=True))
+                wakeup.set()
+            return results
         enabled_ids = {
             t.id for t in self.config.targets if t.enabled and not self._stop_info(t)["stop_reason"]
         }
@@ -1077,8 +1235,17 @@ class Watcher:
         # Explicit manual intervention clears pauses, but never clears server cooldowns.
         with self.store.transaction() as db:
             if platform:
+                recovery = blocked_recovery.read(db)
+                state = self.store.platform()
+                if (
+                    recovery
+                    and recovery["status"] == "PROBING"
+                    and state["lease_until"] > self.clock()
+                ):
+                    return self._deferred("RECOVERY_IN_PROGRESS", state["lease_until"])
                 was_paused = bool(self.store.platform()["paused_reason"])
                 db.execute("UPDATE platform SET paused_reason=NULL WHERE id='ticketplus'")
+                blocked_recovery.write(db, None)
             else:
                 self._target(ident)
                 state = self.store.target(ident)
@@ -1115,6 +1282,24 @@ class Watcher:
         now = self.clock()
         platform = self.store.platform()
         deadlines = []
+        if not self.config.ui_paused and platform["paused_reason"]:
+            recovery = blocked_recovery.read(self.store.connection)
+            if recovery and recovery["status"] in {"WAITING", "PROBING"}:
+                if recovery.get("invalidated"):
+                    return now
+                state = self.store.target(recovery["target_id"])
+                deadlines.append(
+                    max(now, platform["lease_until"])
+                    if recovery["status"] == "PROBING"
+                    else max(
+                        now,
+                        recovery["retry_at"],
+                        platform["blocked_until"],
+                        platform["lease_until"],
+                        platform["next_request"],
+                        state["next_check"] if state else 0,
+                    )
+                )
         for target in self.config.targets:
             if not target.enabled:
                 continue

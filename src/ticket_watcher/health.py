@@ -3,6 +3,7 @@
 import sqlite3
 from contextlib import closing
 
+from . import blocked_recovery
 from .config import Config
 from .models import Result, timestamp, utcnow
 from .storage import SCHEMA_VERSION
@@ -26,6 +27,7 @@ def health_snapshot(connection, targets, now: float) -> Result:
             "process_healthy": heartbeat is not None and 0 <= now - heartbeat < 120,
             "last_heartbeat": timestamp(heartbeat),
             "platform_paused": platform[0] if platform else None,
+            "platform_recovery": blocked_recovery.summary(connection),
             "pending_notifications": pending,
             "observations": [
                 {

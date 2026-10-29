@@ -86,7 +86,7 @@ def test_blocked_response_is_diagnosed_without_retry_or_sensitive_logging(
             captured = json.dumps(result.to_dict()) + watcher.query_log.current.read_text()
             assert "private-" not in captured + caplog.text
             assert "warp.internal" not in captured + caplog.text
-            # A long Retry-After must not turn BLOCKED into an automatic retry.
+            # Retry-After must not bypass the pause or permit an immediate retry.
             deferred = await watcher.check("test", immediate=True)
             assert deferred.data["reason"] == "PLATFORM_PAUSED"
             assert len(requests) == 1
